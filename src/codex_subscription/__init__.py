@@ -36,4 +36,4 @@ __all__ = [
     "image_to_url",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

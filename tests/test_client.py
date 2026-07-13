@@ -55,7 +55,16 @@ class ClientTests(unittest.TestCase):
                         },
                     }
                 ),
-                event({"type": "response.completed", "response": {"output": []}}),
+                event(
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp-123",
+                            "model": "gpt-5.6-luna",
+                            "output": [],
+                        },
+                    }
+                ),
             ]
         )
         response = parse_response_sse(sse)
@@ -63,6 +72,8 @@ class ClientTests(unittest.TestCase):
         assert response is not None
         self.assertEqual(response.text, "OK")
         self.assertEqual(response.tool_calls, [])
+        self.assertEqual(response.response_id, "resp-123")
+        self.assertEqual(response.model, "gpt-5.6-luna")
 
     def test_parse_function_call(self) -> None:
         sse = "\n".join(

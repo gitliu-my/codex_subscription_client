@@ -53,6 +53,16 @@ class CodexResponse:
     text: str
     tool_calls: list[ToolCall] = field(default_factory=list)
     output_items: list[dict[str, Any]] = field(default_factory=list)
+    response_id: str | None = None
+    model: str | None = None
+
+    def require_text(self) -> str:
+        if self.tool_calls:
+            names = ", ".join(call.name for call in self.tool_calls)
+            raise CodexBackendError(f"模型返回了工具调用而不是最终文本：{names}")
+        if not self.text:
+            raise CodexBackendError("模型没有返回文本。")
+        return self.text
 
 
 @dataclass(frozen=True)
@@ -100,6 +110,14 @@ class CodexSubscriptionClient:
         instructions: str | None = None,
         images: Sequence[str | Path] | None = None,
     ) -> str:
+        return self.generate_response(prompt, instructions, images).require_text()
+
+    def generate_response(
+        self,
+        prompt: str,
+        instructions: str | None = None,
+        images: Sequence[str | Path] | None = None,
+    ) -> CodexResponse:
         content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
         for image in images or ():
             content.append(
@@ -109,7 +127,7 @@ class CodexSubscriptionClient:
                     "detail": "auto",
                 }
             )
-        response = self.create_response(
+        return self.create_response(
             input_items=[
                 {
                     "type": "message",
@@ -119,12 +137,6 @@ class CodexSubscriptionClient:
             ],
             instructions=instructions,
         )
-        if response.tool_calls:
-            names = ", ".join(call.name for call in response.tool_calls)
-            raise CodexBackendError(f"模型返回了工具调用而不是最终文本：{names}")
-        if not response.text:
-            raise CodexBackendError("模型没有返回文本。")
-        return response.text
 
     def create_response(
         self,
@@ -308,6 +320,8 @@ def _parse_subscription_model(model: dict[str, Any]) -> SubscriptionModel:
 def parse_response_sse(sse_text: str) -> CodexResponse | None:
     output_items: list[dict[str, Any]] = []
     completed = False
+    response_id: str | None = None
+    response_model: str | None = None
 
     for line in sse_text.splitlines():
         if not line.startswith("data: "):
@@ -328,10 +342,17 @@ def parse_response_sse(sse_text: str) -> CodexResponse | None:
         elif event_type in {"response.completed", "response.done"}:
             completed = True
             response = event.get("response")
-            if isinstance(response, dict) and not output_items:
-                fallback = response.get("output")
-                if isinstance(fallback, list):
-                    output_items = [item for item in fallback if isinstance(item, dict)]
+            if isinstance(response, dict):
+                if isinstance(response.get("id"), str):
+                    response_id = response["id"]
+                if isinstance(response.get("model"), str):
+                    response_model = response["model"]
+                if not output_items:
+                    fallback = response.get("output")
+                    if isinstance(fallback, list):
+                        output_items = [
+                            item for item in fallback if isinstance(item, dict)
+                        ]
 
     if not completed:
         return None
@@ -362,6 +383,8 @@ def parse_response_sse(sse_text: str) -> CodexResponse | None:
         text="".join(text_parts).strip(),
         tool_calls=tool_calls,
         output_items=output_items,
+        response_id=response_id,
+        model=response_model,
     )
 
 

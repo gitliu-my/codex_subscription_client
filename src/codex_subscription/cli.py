@@ -54,6 +54,11 @@ def main(argv: list[str] | None = None) -> int:
     ask_parser.add_argument(
         "--no-login", action="store_true", help="Fail instead of opening browser."
     )
+    ask_parser.add_argument(
+        "--show-meta",
+        action="store_true",
+        help="Print requested model and backend response metadata.",
+    )
 
     serve_parser = subparsers.add_parser(
         "serve", help="Run a local OpenAI-compatible API server."
@@ -111,7 +116,14 @@ def main(argv: list[str] | None = None) -> int:
                 allow_login=not args.no_login,
                 auth=auth,
             )
-            print(client.generate(args.prompt, images=args.image))
+            response = client.generate_response(args.prompt, images=args.image)
+            print(response.require_text())
+            if args.show_meta:
+                print("\n--- metadata ---")
+                print(f"requested_model: {client.model}")
+                print(f"response_model: {response.model or 'not_returned'}")
+                print(f"reasoning_effort: {client.reasoning_effort}")
+                print(f"response_id: {response.response_id or 'not_returned'}")
             return 0
 
         if args.command == "serve":

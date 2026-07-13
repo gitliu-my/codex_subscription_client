@@ -46,8 +46,11 @@ codex-subscription models
 ```bash
 codex-subscription ask "只回答 OK" \
   --model gpt-5.6-luna \
-  --reasoning-effort medium
+  --reasoning-effort medium \
+  --show-meta
 ```
+
+`--show-meta` 会显示请求模型、后端响应模型、推理档位和 response ID。
 
 图片，可以多次传入 `--image`：
 
