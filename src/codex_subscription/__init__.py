@@ -10,15 +10,19 @@ from .auth import (
     extract_chatgpt_account_id,
 )
 from .client import (
+    CodexClientProfile,
     CodexBackendError,
     CodexResponse,
     CodexSubscriptionClient,
+    SubscriptionModel,
     ToolCall,
+    image_to_url,
 )
 
 __all__ = [
     "AuthStatus",
     "CodexBackendError",
+    "CodexClientProfile",
     "CodexOAuth",
     "CodexOAuthConfig",
     "CodexOAuthError",
@@ -26,8 +30,10 @@ __all__ = [
     "CodexSubscriptionClient",
     "FileTokenStore",
     "OAuthTokens",
+    "SubscriptionModel",
     "ToolCall",
     "extract_chatgpt_account_id",
+    "image_to_url",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
