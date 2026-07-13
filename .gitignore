@@ -1,8 +1,29 @@
+# Local secrets and OAuth credentials
+.env
+.env.*
+!.env.example
+auth.json
+tokens.json
+*.token
+
+# Python environments and generated files
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
 .venv/
+venv/
 dist/
 build/
 *.egg-info/
+
+# Editors, operating systems, and local runtime output
+.DS_Store
+.idea/
+.vscode/
+*.log
+*.pid
