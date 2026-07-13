@@ -39,12 +39,16 @@ class CodexSubscriptionClient:
     def __init__(
         self,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         timeout_seconds: int | None = None,
         allow_login: bool | None = None,
         auth: CodexOAuth | None = None,
         backend_url: str = DEFAULT_BACKEND_URL,
     ) -> None:
-        self.model = model or os.getenv("CODEX_SUBSCRIPTION_MODEL", "gpt-5.4")
+        self.model = model or os.getenv("CODEX_SUBSCRIPTION_MODEL", "gpt-5.6-luna")
+        self.reasoning_effort = reasoning_effort or os.getenv(
+            "CODEX_SUBSCRIPTION_REASONING_EFFORT", "medium"
+        )
         self.timeout_seconds = timeout_seconds or int(
             os.getenv("CODEX_SUBSCRIPTION_TIMEOUT_SECONDS", "180")
         )
@@ -144,7 +148,7 @@ class CodexSubscriptionClient:
             "input": input_items,
             "store": False,
             "stream": True,
-            "reasoning": {"effort": "medium", "summary": "auto"},
+            "reasoning": {"effort": self.reasoning_effort, "summary": "auto"},
             "text": {"verbosity": "medium"},
             "include": ["reasoning.encrypted_content"],
         }

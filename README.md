@@ -40,7 +40,7 @@ codex-subscription status
 调用模型：
 
 ```bash
-codex-subscription ask "只回答 OK" --model gpt-5.4
+codex-subscription ask "只回答 OK" --model gpt-5.6-luna --reasoning-effort medium
 ```
 
 退出并删除本模块保存的 token：
@@ -54,7 +54,10 @@ codex-subscription logout
 ```python
 from codex_subscription import CodexSubscriptionClient
 
-client = CodexSubscriptionClient(model="gpt-5.4")
+client = CodexSubscriptionClient(
+    model="gpt-5.6-luna",
+    reasoning_effort="medium",
+)
 answer = client.generate("只回答 OK")
 print(answer)
 ```
@@ -72,7 +75,10 @@ print(answer)
 ```python
 from codex_subscription import CodexSubscriptionClient
 
-client = CodexSubscriptionClient(model="gpt-5.4")
+client = CodexSubscriptionClient(
+    model="gpt-5.6-luna",
+    reasoning_effort="medium",
+)
 response = client.create_response(
     input_items=[
         {
@@ -99,7 +105,8 @@ for call in response.tool_calls:
 
 | 变量 | 用途 |
 | --- | --- |
-| `CODEX_SUBSCRIPTION_MODEL` | 默认模型，默认 `gpt-5.4`。 |
+| `CODEX_SUBSCRIPTION_MODEL` | 默认模型，默认 `gpt-5.6-luna`。 |
+| `CODEX_SUBSCRIPTION_REASONING_EFFORT` | 默认推理档，默认 `medium`。 |
 | `CODEX_SUBSCRIPTION_TOKEN_FILE` | token 文件路径。 |
 | `CODEX_SUBSCRIPTION_TIMEOUT_SECONDS` | 模型请求超时，默认 180 秒。 |
 | `CODEX_SUBSCRIPTION_AUTO_LOGIN` | 设为 `0` 时禁止缺少 token 时自动登录。 |

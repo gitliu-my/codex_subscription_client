@@ -56,9 +56,12 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(response.tool_calls[0].arguments["timezone"], "Asia/Shanghai")
 
     def test_payload_contains_required_subscription_fields(self) -> None:
-        client = CodexSubscriptionClient(model="test-model", allow_login=False)
+        client = CodexSubscriptionClient(
+            model="test-model", reasoning_effort="medium", allow_login=False
+        )
         payload = client._build_payload([], None, None, None)
         self.assertEqual(payload["model"], "test-model")
+        self.assertEqual(payload["reasoning"]["effort"], "medium")
         self.assertFalse(payload["store"])
         self.assertTrue(payload["stream"])
         self.assertIn("reasoning.encrypted_content", payload["include"])

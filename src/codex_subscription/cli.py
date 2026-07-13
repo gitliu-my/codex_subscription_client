@@ -22,7 +22,12 @@ def main(argv: list[str] | None = None) -> int:
 
     ask_parser = subparsers.add_parser("ask", help="Send one prompt to a subscription model.")
     ask_parser.add_argument("prompt", help="Prompt text.")
-    ask_parser.add_argument("--model", default=None, help="Model name, e.g. gpt-5.4.")
+    ask_parser.add_argument("--model", default=None, help="Model name, e.g. gpt-5.6-luna.")
+    ask_parser.add_argument(
+        "--reasoning-effort",
+        default=None,
+        help="Reasoning effort, e.g. low, medium, high, xhigh, or max.",
+    )
     ask_parser.add_argument("--no-login", action="store_true", help="Fail instead of opening browser.")
     args = parser.parse_args(argv)
 
@@ -50,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "ask":
             client = CodexSubscriptionClient(
                 model=args.model,
+                reasoning_effort=args.reasoning_effort,
                 allow_login=not args.no_login,
                 auth=auth,
             )
