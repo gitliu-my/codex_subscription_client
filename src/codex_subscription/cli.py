@@ -8,6 +8,7 @@ import sys
 from .auth import CodexOAuth, CodexOAuthError
 from .client import CodexBackendError, CodexSubscriptionClient
 from .server import serve
+from .ui import launch_dashboard
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -75,6 +76,14 @@ def main(argv: list[str] | None = None) -> int:
         "--reasoning-effort", default=None, help="Default effort."
     )
     serve_parser.add_argument("--no-login", action="store_true", help="Disable browser login.")
+    ui_parser = subparsers.add_parser(
+        "ui", help="Open the local browser dashboard."
+    )
+    ui_parser.add_argument("--host", default="127.0.0.1", help="Dashboard bind host.")
+    ui_parser.add_argument("--port", type=int, default=8320, help="Dashboard port.")
+    ui_parser.add_argument(
+        "--no-browser", action="store_true", help="Do not open the dashboard automatically."
+    )
     args = parser.parse_args(argv)
 
     auth = CodexOAuth()
@@ -137,6 +146,13 @@ def main(argv: list[str] | None = None) -> int:
                 serve(args.host, args.port, args.api_key, client)
             except KeyboardInterrupt:
                 print("\n本地 API 已停止。")
+            return 0
+
+        if args.command == "ui":
+            try:
+                launch_dashboard(args.host, args.port, open_browser=not args.no_browser)
+            except KeyboardInterrupt:
+                print("\n管理界面已停止。")
             return 0
     except (CodexOAuthError, CodexBackendError) as exc:
         print(f"error: {exc}", file=sys.stderr)

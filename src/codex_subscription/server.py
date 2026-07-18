@@ -93,6 +93,12 @@ class SubscriptionApiServer(ThreadingHTTPServer):
 class SubscriptionApiHandler(BaseHTTPRequestHandler):
     server: SubscriptionApiServer
 
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self.send_response(204)
+        self._cors_headers()
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self) -> None:  # noqa: N802
         if not self._authorized():
             return
@@ -184,6 +190,7 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
+        self._cors_headers()
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
@@ -192,6 +199,7 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
         encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self._cors_headers()
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
@@ -210,6 +218,11 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         return
+
+    def _cors_headers(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 
 
 def serve(

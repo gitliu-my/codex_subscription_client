@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import threading
 import unittest
+import urllib.request
 
 from codex_subscription.client import CodexResponse, ToolCall
 from codex_subscription.server import (
+    SubscriptionApiServer,
     _chat_completion_body,
     _chat_messages_to_input,
     _normalize_chat_tools,
@@ -12,7 +15,32 @@ from codex_subscription.server import (
 )
 
 
+class _NoopClient:
+    def list_models(self):
+        return []
+
+
 class ServerTests(unittest.TestCase):
+    def test_options_supports_browser_extension_preflight(self) -> None:
+        server = SubscriptionApiServer(("127.0.0.1", 0), _NoopClient())
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
+                method="OPTIONS",
+            )
+            with urllib.request.urlopen(request) as response:
+                self.assertEqual(response.status, 204)
+                self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
+                self.assertIn(
+                    "Authorization", response.headers["Access-Control-Allow-Headers"]
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_responses_string_input_is_normalized(self) -> None:
         items = _normalize_responses_input("hello")
         self.assertEqual(items[0]["role"], "user")

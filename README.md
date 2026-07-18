@@ -1,6 +1,6 @@
 # codex_subscription_client
 
-状态：`0.2.0`，已通过真实 ChatGPT OAuth、GPT-5.6 Luna 文本调用验收。
+状态：`0.3.0`，已通过真实 ChatGPT OAuth、GPT-5.6 Luna 文本调用验收。
 
 这是一个独立 Python 包，把用户自己的 ChatGPT/Codex 订阅转换成 Python SDK
 和本地 OpenAI-compatible API。它不调用或依赖本机 Codex CLI，也不经过模型中间商。
@@ -15,6 +15,49 @@
 - 临时网络或 TLS 断连自动重试。
 - Python SDK。
 - 本地 `/v1/models`、`/v1/responses` 和 `/v1/chat/completions`。
+- 本地管理 UI，可完成登录、模型选择、API 启停和调用测试。
+- macOS 独立终端程序与 App，运行时不需要 Python 或虚拟环境。
+
+## 推荐：独立程序和 App
+
+构建并安装到当前用户目录：
+
+```bash
+./scripts/build_macos.sh
+./scripts/install_macos.sh
+```
+
+macOS 首次使用 Apple 构建工具时，需要先接受一次系统许可：
+
+```bash
+sudo xcodebuild -license accept
+```
+
+安装后有两个入口：
+
+- 终端命令：`~/.local/bin/codex-subscription`（当前用户的 PATH 已包含该目录）。
+- macOS App：`~/Applications/Codex Subscription.app`，可以从 Finder 或 Spotlight 打开。
+
+构建过程会使用隔离的 `.build-venv` 安装 PyInstaller；`dist` 中的最终程序已经
+包含 Python 运行时，实际使用不需要激活 `.venv`，也不依赖系统 Python。
+
+打开管理界面也可以直接执行：
+
+```bash
+codex-subscription ui
+```
+
+管理界面默认位于 `http://127.0.0.1:8320`，可以完成以下操作：
+
+- ChatGPT/Codex 网页登录和退出登录。
+- 查询当前订阅实际开放的模型。
+- 选择模型与推理档位。
+- 启动、停止 OpenAI-compatible API。
+- 复制翻译插件需要的接口地址和 API Key。
+- 发送一次真实模型测试。
+
+UI 配置保存在 `~/.codex_subscription/settings.json`，文件权限为 `0600`；OAuth
+token 仍保存在 `~/.codex_subscription/auth.json`，不会进入构建产物。
 
 ## 安装
 
