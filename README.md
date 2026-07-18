@@ -1,78 +1,45 @@
 # codex_subscription_client
 
-状态：`0.3.0`，已通过真实 ChatGPT OAuth、GPT-5.6 Luna 文本调用验收。
+[![CI](https://github.com/gitliu-my/codex_subscription_client/actions/workflows/ci.yml/badge.svg)](https://github.com/gitliu-my/codex_subscription_client/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-这是一个独立 Python 包，把用户自己的 ChatGPT/Codex 订阅转换成 Python SDK
-和本地 OpenAI-compatible API。它不调用或依赖本机 Codex CLI，也不经过模型中间商。
+将用户自己的 ChatGPT/Codex 订阅封装为 Python SDK 和仅监听本机的
+OpenAI-compatible API，并提供命令行工具与 macOS 管理 App。
 
-## 已支持
+> [!IMPORTANT]
+> 这是非官方实验项目，与 OpenAI 无隶属或背书关系。它使用 Codex 客户端采用的
+> OAuth 和后端协议；这些接口不是稳定的第三方公共 API，可能随时变化或停止工作。
+> 使用前请自行确认账号、订阅和适用条款允许你的使用方式。不要共享 token、转售
+> 账号或用它绕过订阅限制。
+
+当前版本：`0.4.0`（alpha）。项目不依赖本机 Codex CLI，也不经过模型中间商。
+
+## 功能
 
 - OAuth Authorization Code + PKCE 网页登录。
-- access token / refresh token 安全存储与自动刷新。
-- 组件内置 Codex 协议 profile，不读取本机 Codex 版本。
-- 实时查询当前 profile 可用的订阅模型。
+- 本地保存 access/refresh token，并在过期时刷新。
+- 实时查询当前账号和客户端 profile 可用的订阅模型。
 - 文本、图片和结构化 function calling。
-- 临时网络或 TLS 断连自动重试。
 - Python SDK。
 - 本地 `/v1/models`、`/v1/responses` 和 `/v1/chat/completions`。
-- 本地管理 UI，可完成登录、模型选择、API 启停和调用测试。
-- macOS 独立终端程序与 App，运行时不需要 Python 或虚拟环境。
+- 本地管理 UI：登录、模型选择、服务启停和真实调用测试。
+- macOS 独立终端程序与 App，使用时不需要 Python 或虚拟环境。
 
-## 推荐：独立程序和 App
+## 快速开始
 
-构建并安装到当前用户目录：
-
-```bash
-./scripts/build_macos.sh
-./scripts/install_macos.sh
-```
-
-macOS 首次使用 Apple 构建工具时，需要先接受一次系统许可：
+### 从源码运行
 
 ```bash
-sudo xcodebuild -license accept
-```
-
-安装后有两个入口：
-
-- 终端命令：`~/.local/bin/codex-subscription`（当前用户的 PATH 已包含该目录）。
-- macOS App：`~/Applications/Codex Subscription.app`，可以从 Finder 或 Spotlight 打开。
-
-构建过程会使用隔离的 `.build-venv` 安装 PyInstaller；`dist` 中的最终程序已经
-包含 Python 运行时，实际使用不需要激活 `.venv`，也不依赖系统 Python。
-
-打开管理界面也可以直接执行：
-
-```bash
-codex-subscription ui
-```
-
-管理界面默认位于 `http://127.0.0.1:8320`，可以完成以下操作：
-
-- ChatGPT/Codex 网页登录和退出登录。
-- 查询当前订阅实际开放的模型。
-- 选择模型与推理档位。
-- 启动、停止 OpenAI-compatible API。
-- 复制翻译插件需要的接口地址和 API Key。
-- 发送一次真实模型测试。
-
-UI 配置保存在 `~/.codex_subscription/settings.json`，文件权限为 `0600`；OAuth
-token 仍保存在 `~/.codex_subscription/auth.json`，不会进入构建产物。
-
-## 安装
-
-在项目自己的虚拟环境中安装：
-
-```bash
+git clone https://github.com/gitliu-my/codex_subscription_client.git
 cd codex_subscription_client
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -e .
 ```
 
-`-e` 表示 editable install，修改源码后不需要反复重装。
+`-e` 是 editable install，修改源码后不需要重复安装。
 
-## 登录和模型
+登录并查看当前订阅实际开放的模型：
 
 ```bash
 codex-subscription login
@@ -80,45 +47,74 @@ codex-subscription status
 codex-subscription models
 ```
 
-`models` 查询 OpenAI Codex backend 的实时模型列表，不读取本机 Codex 缓存。
-
-## 命令行调用
-
-文本：
+发送文本或图片：
 
 ```bash
 codex-subscription ask "只回答 OK" \
   --model gpt-5.6-luna \
   --reasoning-effort medium \
   --show-meta
-```
 
-`--show-meta` 会显示请求模型、后端响应模型、推理档位和 response ID。
-
-图片，可以多次传入 `--image`：
-
-```bash
 codex-subscription ask "描述这张图片" \
   --image /absolute/path/to/image.png \
   --model gpt-5.6-luna
 ```
 
+`--show-meta` 显示请求模型、后端返回模型、推理档位和 response ID。模型自己在
+自然语言回答中声称的型号不可靠，应以响应元数据为准。
+
+### macOS 独立程序
+
+```bash
+./scripts/build_macos.sh
+./scripts/install_macos.sh
+```
+
+安装后可使用：
+
+- `~/.local/bin/codex-subscription`
+- `~/Applications/Codex Subscription.app`
+
+构建脚本在隔离的 `.build-venv` 中使用 PyInstaller。`dist` 里的产物包含 Python
+运行时，日常使用无需激活虚拟环境。若系统尚未接受 Xcode 许可，先运行：
+
+```bash
+sudo xcodebuild -license accept
+```
+
+也可以直接从终端打开管理页：
+
+```bash
+codex-subscription ui
+```
+
+管理页默认位于 `http://127.0.0.1:8320`。配置保存到
+`~/.codex_subscription/settings.json`，OAuth token 保存到
+`~/.codex_subscription/auth.json`，两者权限均限制为当前用户。
+
 ## 本地 API
 
-启动服务，默认仅监听本机：
+启动服务时必须使用 Bearer Key。省略 `--api-key` 时会随机生成并打印一个：
 
 ```bash
 codex-subscription serve \
   --host 127.0.0.1 \
   --port 8317 \
   --model gpt-5.6-luna \
-  --reasoning-effort medium
+  --reasoning-effort low
+```
+
+需要给浏览器插件配置稳定 Key 时，推荐从管理页复制；也可以显式传入：
+
+```bash
+codex-subscription serve --api-key 'replace-with-a-long-random-local-key'
 ```
 
 Responses API：
 
 ```bash
 curl http://127.0.0.1:8317/v1/responses \
+  -H 'Authorization: Bearer <local-api-key>' \
   -H 'Content-Type: application/json' \
   -d '{"model":"gpt-5.6-luna","input":"只回答 OK"}'
 ```
@@ -127,6 +123,7 @@ Chat Completions API：
 
 ```bash
 curl http://127.0.0.1:8317/v1/chat/completions \
+  -H 'Authorization: Bearer <local-api-key>' \
   -H 'Content-Type: application/json' \
   -d '{
     "model":"gpt-5.6-luna",
@@ -134,13 +131,11 @@ curl http://127.0.0.1:8317/v1/chat/completions \
   }'
 ```
 
-需要保护本地端口时，启动命令增加 `--api-key local-secret`，调用方发送：
+浏览器扩展来源默认允许 CORS，普通网页来源默认拒绝。确实需要额外网页来源时，可通过
+`CODEX_SUBSCRIPTION_ALLOWED_ORIGINS` 传入逗号分隔的完整 Origin；只应添加你信任的
+来源。
 
-```text
-Authorization: Bearer local-secret
-```
-
-## Python 使用
+## Python SDK
 
 ```python
 from codex_subscription import CodexSubscriptionClient
@@ -164,23 +159,45 @@ for model in client.list_models():
 
 | 变量 | 用途 |
 | --- | --- |
-| `CODEX_SUBSCRIPTION_MODEL` | 默认模型，默认 `gpt-5.6-luna`。 |
+| `CODEX_SUBSCRIPTION_MODEL` | 默认模型，当前默认 `gpt-5.6-luna`。 |
 | `CODEX_SUBSCRIPTION_REASONING_EFFORT` | 默认推理档，默认 `medium`。 |
 | `CODEX_SUBSCRIPTION_TOKEN_FILE` | token 文件，默认 `~/.codex_subscription/auth.json`。 |
 | `CODEX_SUBSCRIPTION_TIMEOUT_SECONDS` | 模型请求超时，默认 180 秒。 |
 | `CODEX_SUBSCRIPTION_AUTO_LOGIN` | 设为 `0` 时禁止自动打开登录。 |
 | `CODEX_SUBSCRIPTION_OPEN_BROWSER` | 设为 `0` 时只打印授权地址。 |
+| `CODEX_SUBSCRIPTION_API_KEY` | `serve` 使用的本地 Bearer Key。 |
+| `CODEX_SUBSCRIPTION_ALLOWED_ORIGINS` | 额外允许的网页 CORS Origin。 |
+
+## 安全说明
+
+- API 和管理页只允许监听 `127.0.0.1`/`localhost`；不要通过反向代理公开到网络。
+- API 始终要求随机或显式 Bearer Key，`/health` 仅返回最小健康状态。
+- 管理页使用随机会话 Cookie、同源检查和 CSRF 请求头，不返回账号 ID 或 token 路径。
+- token 与本地 API Key 仍是磁盘上的敏感凭据。不要提交、分享或粘贴到 Issue。
+- `0.4.0` 会自动替换旧版固定的 `codex-local-translate` Key。升级后请从管理页重新复制
+  Key 到浏览器翻译插件。
+
+详见 [安全模型](docs/SECURITY_MODEL.md) 和 [安全报告策略](SECURITY.md)。
 
 ## 当前边界
 
-- 本地 API 是首版 OpenAI-compatible 子集，不是完整 OpenAI Platform API。
-- `stream=true` 当前会返回 SSE 格式，但上游结果仍先在组件内聚合，不是逐 token 转发。
-- 暂未提供 Anthropic `/v1/messages`，因此还不能直接替代 CLIProxyAPI 驱动 Claude Code。
-- Codex backend 并非承诺稳定的第三方公共 API；协议 profile 和请求字段可能变化。
-- 仅用于自己的账号和个人订阅，不共享 token、不转售账号、不绕过订阅用量限制。
+- OpenAI-compatible API 只实现常用子集，不是完整 OpenAI Platform API。
+- `stream=true` 会返回 SSE，但上游结果仍先在组件内聚合，不是逐 token 转发。
+- 暂未提供 Anthropic `/v1/messages`，不能直接替代 CLIProxyAPI 驱动 Claude Code。
+- 模型名称、可用推理档位和多模态能力由后端实时返回，不能保证长期不变。
+- 当前 macOS App 未签名和公证，适合本机源码构建，不是正式发行包。
 
-退出登录并删除本模块保存的 token：
+退出登录并删除本项目保存的 token：
 
 ```bash
 codex-subscription logout
 ```
+
+## 参与贡献
+
+请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。提交安全问题请遵循
+[SECURITY.md](SECURITY.md)，不要创建包含凭据的公开 Issue。
+
+## License
+
+[MIT](LICENSE)

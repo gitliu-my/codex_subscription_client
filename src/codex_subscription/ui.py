@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import http.client
+import http.cookies
 import os
 import secrets
 import tempfile
@@ -32,6 +33,7 @@ class DashboardController:
         self._api_server: SubscriptionApiServer | None = None
         self._api_thread: threading.Thread | None = None
         self.config = self._load_settings()
+        self._save_settings()
 
     def state(self) -> dict[str, Any]:
         status = self.auth.status()
@@ -43,8 +45,6 @@ class DashboardController:
             "auth": {
                 "logged_in": status.logged_in,
                 "expired": status.expired,
-                "account_id": status.account_id,
-                "token_path": str(status.token_path),
             },
             "server": {
                 "running": managed or external,
@@ -84,7 +84,7 @@ class DashboardController:
         self.stop_api()
         client = self._client(config, allow_login=False)
         server = SubscriptionApiServer(
-            (config["host"], config["port"]), client, api_key=config["api_key"] or None
+            (config["host"], config["port"]), client, api_key=config["api_key"]
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         with self._lock:
@@ -163,7 +163,7 @@ class DashboardController:
         defaults: dict[str, Any] = {
             "host": "127.0.0.1",
             "port": 8317,
-            "api_key": "codex-local-translate",
+            "api_key": secrets.token_urlsafe(32),
             "model": "gpt-5.6-luna",
             "reasoning_effort": "low",
         }
@@ -171,6 +171,10 @@ class DashboardController:
             return defaults
         try:
             loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                raise ValueError("settings must be an object")
+            if loaded.get("api_key") in {None, "", "codex-local-translate"}:
+                loaded["api_key"] = defaults["api_key"]
             return self._validated_config({**defaults, **loaded})
         except (OSError, ValueError, json.JSONDecodeError):
             return defaults
@@ -209,10 +213,13 @@ class DashboardController:
         effort = str(value.get("reasoning_effort") or "low")
         if effort not in REASONING_EFFORTS:
             raise ValueError("不支持的推理档位。")
+        api_key = str(value.get("api_key") or "").strip()
+        if len(api_key) < 24:
+            raise ValueError("本地 API Key 至少需要 24 个字符。")
         return {
             "host": host,
             "port": port,
-            "api_key": str(value.get("api_key") or "").strip(),
+            "api_key": api_key,
             "model": model,
             "reasoning_effort": effort,
         }
@@ -224,6 +231,7 @@ class DashboardServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], controller: DashboardController) -> None:
         super().__init__(address, DashboardHandler)
         self.controller = controller
+        self.session_token = secrets.token_urlsafe(32)
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -232,16 +240,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = urllib.parse.urlparse(self.path).path
         if path == "/":
-            self._send(200, DASHBOARD_HTML, "text/html; charset=utf-8")
+            self._send(
+                200,
+                DASHBOARD_HTML,
+                "text/html; charset=utf-8",
+                set_session_cookie=True,
+            )
+        elif path == "/health":
+            self._json(200, {"status": "ok"})
         elif path == "/api/state":
+            if not self._session_authorized():
+                return
             self._json(200, self.server.controller.state())
         elif path == "/api/models":
+            if not self._session_authorized():
+                return
             self._call(self.server.controller.models)
         else:
             self._json(404, {"error": "Not found"})
 
     def do_POST(self) -> None:  # noqa: N802
         path = urllib.parse.urlparse(self.path).path
+        if not self._trusted_post():
+            return
         try:
             body = self._read_json()
         except ValueError as exc:
@@ -278,7 +299,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             raise ValueError("请求长度无效。") from exc
         if length == 0:
             return {}
-        if length > 1024 * 1024:
+        if length < 0 or length > 1024 * 1024:
             raise ValueError("请求内容过大。")
         try:
             value = json.loads(self.rfile.read(length))
@@ -295,14 +316,80 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "application/json; charset=utf-8",
         )
 
-    def _send(self, status: int, body: str, content_type: str) -> None:
+    def _send(
+        self,
+        status: int,
+        body: str,
+        content_type: str,
+        set_session_cookie: bool = False,
+    ) -> None:
+        self._send_response(
+            status,
+            body,
+            content_type,
+            set_session_cookie=set_session_cookie,
+        )
+
+    def _send_response(
+        self,
+        status: int,
+        body: str,
+        content_type: str,
+        set_session_cookie: bool = False,
+    ) -> None:
         encoded = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'unsafe-inline'; "
+            "style-src 'unsafe-inline'; connect-src 'self'; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+        )
+        if set_session_cookie:
+            self.send_header(
+                "Set-Cookie",
+                f"codex_dashboard={self.server.session_token}; "
+                "HttpOnly; SameSite=Strict; Path=/",
+            )
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+
+    def _session_authorized(self) -> bool:
+        cookie = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
+        value = cookie.get("codex_dashboard")
+        if value and secrets.compare_digest(value.value, self.server.session_token):
+            return True
+        self._json(401, {"error": "管理页会话无效，请重新打开页面。"})
+        return False
+
+    def _trusted_post(self) -> bool:
+        if not self._session_authorized():
+            return False
+        expected_hosts = {
+            f"127.0.0.1:{self.server.server_port}",
+            f"localhost:{self.server.server_port}",
+        }
+        if self.headers.get("Host") not in expected_hosts:
+            self._json(403, {"error": "请求来源无效。"})
+            return False
+        origin = self.headers.get("Origin")
+        if origin and origin not in {f"http://{host}" for host in expected_hosts}:
+            self._json(403, {"error": "请求来源无效。"})
+            return False
+        if self.headers.get("X-Codex-Dashboard") != "1":
+            self._json(403, {"error": "缺少管理页请求标记。"})
+            return False
+        content_type = self.headers.get("Content-Type", "")
+        if not content_type.lower().startswith("application/json"):
+            self._json(415, {"error": "请求必须使用 application/json。"})
+            return False
+        return True
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -335,11 +422,11 @@ def launch_dashboard(
 
 def _dashboard_is_running(url: str) -> bool:
     try:
-        with urllib.request.urlopen(f"{url}/api/state", timeout=2) as response:
+        with urllib.request.urlopen(f"{url}/health", timeout=2) as response:
             value = json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         return False
-    return isinstance(value, dict) and {"auth", "server", "config"} <= value.keys()
+    return isinstance(value, dict) and value.get("status") == "ok"
 
 
 DASHBOARD_HTML = r'''<!doctype html>
@@ -375,10 +462,10 @@ label{display:block;color:#445158;font-size:12px;font-weight:600;margin:13px 0 5
 </main>
 <script>
 const $=id=>document.getElementById(id);let state=null,subscriptionModels=[],loadingModels=false,modelsAttempted=false,formInitialized=false;
-async function request(path,options={}){const response=await fetch(path,{headers:{'Content-Type':'application/json'},...options});const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败');return data}
+async function request(path,options={}){const response=await fetch(path,{credentials:'same-origin',headers:{'Content-Type':'application/json','X-Codex-Dashboard':'1'},...options});const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败');return data}
 function notice(text,error=false){$('notice').textContent=text;$('notice').className=error?'notice error':'notice'}
 function config(){return{host:'127.0.0.1',port:Number($('port').value),api_key:$('apiKey').value,model:$('model').value,reasoning_effort:$('effort').value}}
-function render(value){state=value;const auth=value.auth,server=value.server,c=value.config;$('authText').textContent=auth.logged_in?(auth.expired?'登录已过期':'已登录'):'未登录';$('account').textContent=auth.account_id?`账号：${auth.account_id}`:'';$('loginBtn').disabled=auth.logged_in&&!auth.expired;$('logoutBtn').disabled=!auth.logged_in;$('serverDot').className=server.running?'dot on':'dot';$('serverLabel').textContent=server.external?'API 由终端运行':server.managed?'API 由 App 运行':server.port_in_use?'API 端口被占用':'API 已停止';$('apiState').textContent=server.external?'运行中（终端管理）':server.managed?'运行中（App 管理）':server.port_in_use?'端口被其他程序占用':'已停止';$('serverMeta').textContent=server.external?'参数由终端启动命令决定，请在终端停止':server.managed?'由 App 管理，仅监听本机':'仅监听本机，不向局域网开放';$('startBtn').disabled=server.port_in_use||!auth.logged_in;$('stopBtn').disabled=!server.managed;$('endpoint').value=server.url;if(!formInitialized){$('model').value=c.model;$('apiKey').value=c.api_key;$('port').value=c.port;setEffortOptions(c.reasoning_effort);formInitialized=true}}
+function render(value){state=value;const auth=value.auth,server=value.server,c=value.config;$('authText').textContent=auth.logged_in?(auth.expired?'登录已过期':'已登录'):'未登录';$('account').textContent=auth.logged_in?'登录凭据仅保存在本机':'';$('loginBtn').disabled=auth.logged_in&&!auth.expired;$('logoutBtn').disabled=!auth.logged_in;$('serverDot').className=server.running?'dot on':'dot';$('serverLabel').textContent=server.external?'API 由终端运行':server.managed?'API 由 App 运行':server.port_in_use?'API 端口被占用':'API 已停止';$('apiState').textContent=server.external?'运行中（终端管理）':server.managed?'运行中（App 管理）':server.port_in_use?'端口被其他程序占用':'已停止';$('serverMeta').textContent=server.external?'参数由终端启动命令决定，请在终端停止':server.managed?'由 App 管理，仅监听本机':'仅监听本机，不向局域网开放';$('startBtn').disabled=server.port_in_use||!auth.logged_in;$('stopBtn').disabled=!server.managed;$('endpoint').value=server.url;if(!formInitialized){$('model').value=c.model;$('apiKey').value=c.api_key;$('port').value=c.port;setEffortOptions(c.reasoning_effort);formInitialized=true}}
 function setEffortOptions(preferred){const selected=subscriptionModels.find(m=>m.slug===$('model').value);const efforts=selected?.supported_reasoning_efforts?.length?selected.supported_reasoning_efforts:state.reasoning_efforts;const fallback=selected?.default_reasoning_effort||efforts[0];const value=efforts.includes(preferred)?preferred:fallback;$('effort').innerHTML=efforts.map(x=>`<option value="${x}">${x}</option>`).join('');$('effort').value=value}
 function renderModels(preferred){const current=subscriptionModels.some(m=>m.slug===preferred)?preferred:subscriptionModels[0]?.slug;if(!current)return;$('model').innerHTML=subscriptionModels.map(m=>`<option value="${m.slug}">${m.slug}</option>`).join('');$('model').value=current;setEffortOptions($('effort').value)}
 async function refresh(silent=false){try{const value=await request('/api/state');render(value);if(value.auth.logged_in&&!modelsAttempted)await loadModels(true);if(!silent)notice('本地状态已就绪。')}catch(e){if(!silent)notice(e.message,true)}}

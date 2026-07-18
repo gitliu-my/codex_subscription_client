@@ -1,0 +1,16 @@
+# Changelog
+
+All notable changes are documented here.
+
+## 0.4.0 - 2026-07-18
+
+- Require a local Bearer key for every model API request.
+- Generate a random key by default and rotate the legacy predictable dashboard key.
+- Restrict CORS to browser extension origins and explicitly configured trusted origins.
+- Protect dashboard APIs with a random session cookie, origin checks, and a CSRF header.
+- Hide account identifiers and credential paths from dashboard state.
+- Add MIT licensing, security and contribution policies, architecture docs, and CI.
+
+## 0.3.0 - 2026-07-17
+
+- Add the standalone macOS app, local dashboard, and external server detection.

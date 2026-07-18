@@ -3,6 +3,7 @@ from __future__ import annotations
 """Command-line interface for browser login and connectivity checks."""
 
 import argparse
+import os
 import sys
 
 from .auth import CodexOAuth, CodexOAuthError
@@ -68,8 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--port", type=int, default=8317, help="Bind port.")
     serve_parser.add_argument(
         "--api-key",
-        default=None,
-        help="Optional bearer token required by the local API.",
+        default=os.environ.get("CODEX_SUBSCRIPTION_API_KEY"),
+        help="Bearer token required by the local API. Generated when omitted.",
     )
     serve_parser.add_argument("--model", default=None, help="Default model.")
     serve_parser.add_argument(
@@ -154,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
             except KeyboardInterrupt:
                 print("\n管理界面已停止。")
             return 0
-    except (CodexOAuthError, CodexBackendError) as exc:
+    except (CodexOAuthError, CodexBackendError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

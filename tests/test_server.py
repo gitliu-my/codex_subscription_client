@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import unittest
+import urllib.error
 import urllib.request
 
 from codex_subscription.client import CodexResponse, ToolCall
@@ -21,21 +22,84 @@ class _NoopClient:
 
 
 class ServerTests(unittest.TestCase):
+    def test_server_rejects_non_loopback_bind_and_short_key(self) -> None:
+        with self.assertRaisesRegex(ValueError, "only bind"):
+            SubscriptionApiServer(("0.0.0.0", 0), _NoopClient())
+        with self.assertRaisesRegex(ValueError, "at least 24"):
+            SubscriptionApiServer(
+                ("127.0.0.1", 0), _NoopClient(), api_key="too-short"
+            )
+
     def test_options_supports_browser_extension_preflight(self) -> None:
-        server = SubscriptionApiServer(("127.0.0.1", 0), _NoopClient())
+        server = SubscriptionApiServer(
+            ("127.0.0.1", 0), _NoopClient(), api_key="a" * 32
+        )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
             request = urllib.request.Request(
                 f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
                 method="OPTIONS",
+                headers={"Origin": "chrome-extension://extension-id"},
             )
             with urllib.request.urlopen(request) as response:
                 self.assertEqual(response.status, 204)
-                self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
+                self.assertEqual(
+                    response.headers["Access-Control-Allow-Origin"],
+                    "chrome-extension://extension-id",
+                )
                 self.assertIn(
                     "Authorization", response.headers["Access-Control-Allow-Headers"]
                 )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_web_page_origin_is_rejected(self) -> None:
+        server = SubscriptionApiServer(
+            ("127.0.0.1", 0), _NoopClient(), api_key="a" * 32
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
+                method="OPTIONS",
+                headers={"Origin": "https://example.invalid"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                urllib.request.urlopen(request)
+            self.assertEqual(context.exception.code, 403)
+            self.assertIsNone(
+                context.exception.headers.get("Access-Control-Allow-Origin")
+            )
+            context.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_api_key_is_always_required_but_health_is_public(self) -> None:
+        server = SubscriptionApiServer(("127.0.0.1", 0), _NoopClient())
+        self.assertGreaterEqual(len(server.api_key), 32)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            with urllib.request.urlopen(f"{base_url}/health") as response:
+                self.assertEqual(response.status, 200)
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                urllib.request.urlopen(f"{base_url}/v1/models")
+            self.assertEqual(context.exception.code, 401)
+            context.exception.close()
+
+            request = urllib.request.Request(
+                f"{base_url}/v1/models",
+                headers={"Authorization": f"Bearer {server.api_key}"},
+            )
+            with urllib.request.urlopen(request) as response:
+                self.assertEqual(response.status, 200)
         finally:
             server.shutdown()
             server.server_close()

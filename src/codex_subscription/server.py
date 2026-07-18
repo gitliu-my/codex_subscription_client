@@ -3,6 +3,7 @@ from __future__ import annotations
 """Small local OpenAI-compatible HTTP facade for the subscription client."""
 
 import json
+import os
 import secrets
 import time
 import uuid
@@ -84,26 +85,35 @@ class SubscriptionApiServer(ThreadingHTTPServer):
         address: tuple[str, int],
         client: CodexSubscriptionClient,
         api_key: str | None = None,
+        allowed_origins: tuple[str, ...] | None = None,
     ) -> None:
+        if address[0] not in {"127.0.0.1", "localhost"}:
+            raise ValueError("Local API may only bind to 127.0.0.1 or localhost")
+        if api_key is not None and len(api_key) < 24:
+            raise ValueError("Local API key must contain at least 24 characters")
         super().__init__(address, SubscriptionApiHandler)
         self.api = SubscriptionApi(client)
-        self.api_key = api_key
+        self.api_key = api_key or secrets.token_urlsafe(32)
+        self.allowed_origins = allowed_origins or _configured_allowed_origins()
 
 
 class SubscriptionApiHandler(BaseHTTPRequestHandler):
     server: SubscriptionApiServer
 
     def do_OPTIONS(self) -> None:  # noqa: N802
+        if self.headers.get("Origin") and not self._allowed_cors_origin():
+            self._error(403, "Origin is not allowed")
+            return
         self.send_response(204)
         self._cors_headers()
         self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
-        if not self._authorized():
-            return
         if self.path == "/health":
             self._json(200, {"status": "ok"})
+            return
+        if not self._authorized():
             return
         if self.path == "/v1/models":
             self._call(self.server.api.models)
@@ -154,8 +164,6 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
 
     def _authorized(self) -> bool:
         expected = self.server.api_key
-        if not expected:
-            return True
         provided = self.headers.get("Authorization", "")
         if provided.startswith("Bearer ") and secrets.compare_digest(
             provided.removeprefix("Bearer "), expected
@@ -199,6 +207,8 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
         encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self._cors_headers()
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
@@ -220,9 +230,29 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
         return
 
     def _cors_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self._allowed_cors_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
+    def _allowed_cors_origin(self) -> str | None:
+        origin = self.headers.get("Origin")
+        if not origin:
+            return None
+        if origin in self.server.allowed_origins:
+            return origin
+        extension_prefixes = (
+            "chrome-extension://",
+            "moz-extension://",
+            "safari-web-extension://",
+        )
+        if origin.startswith(extension_prefixes):
+            remainder = origin.split("://", 1)[1]
+            if remainder and all(character not in remainder for character in "/?#"):
+                return origin
+        return None
 
 
 def serve(
@@ -231,11 +261,22 @@ def serve(
     api_key: str | None = None,
     client: CodexSubscriptionClient | None = None,
 ) -> None:
+    if host not in {"127.0.0.1", "localhost"}:
+        raise ValueError("Local API may only bind to 127.0.0.1 or localhost")
+    effective_api_key = (
+        api_key or os.environ.get("CODEX_SUBSCRIPTION_API_KEY") or secrets.token_urlsafe(32)
+    )
     server = SubscriptionApiServer(
-        (host, port), client or CodexSubscriptionClient(), api_key=api_key
+        (host, port), client or CodexSubscriptionClient(), api_key=effective_api_key
     )
     print(f"Codex subscription API listening on http://{host}:{port}")
+    print(f"Local API key: {effective_api_key}")
     server.serve_forever()
+
+
+def _configured_allowed_origins() -> tuple[str, ...]:
+    value = os.environ.get("CODEX_SUBSCRIPTION_ALLOWED_ORIGINS", "")
+    return tuple(origin.strip() for origin in value.split(",") if origin.strip())
 
 
 def _normalize_responses_input(value: Any) -> list[dict[str, Any]]:
