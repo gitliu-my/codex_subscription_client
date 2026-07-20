@@ -25,8 +25,8 @@ CLI / browser dashboard / Python caller
   process management for both CLI and dashboard.
 - `settings.py`: shared, permission-restricted defaults for CLI and dashboard entry points.
 - `terminal_menu.py`: dependency-free arrow-key selector for interactive CLI configuration.
-- `ui.py`: local dashboard, settings persistence, API process management, and dashboard
-  session protection.
+- `ui.py`: responsive dashboard, multimodal direct/API test workbench, API process management,
+  and dashboard session protection.
 - `cli.py`: the `csub` entry point with `login`, `status`, `models`, `config`, `ask`,
   `serve`, and `ui` commands.
 

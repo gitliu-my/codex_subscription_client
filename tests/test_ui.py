@@ -12,11 +12,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from codex_subscription.ui import (
+    DASHBOARD_HTML,
     DashboardController,
     DashboardServer,
     _dashboard_is_running,
     launch_dashboard,
 )
+from codex_subscription.client import CodexResponse, CodexSubscriptionClient
 from codex_subscription.server import SubscriptionApiServer
 
 
@@ -26,6 +28,12 @@ class _NoopClient:
 
 
 class DashboardControllerTests(unittest.TestCase):
+    def test_dashboard_exposes_multimodal_dual_path_workbench(self) -> None:
+        self.assertIn('id="testMode"', DASHBOARD_HTML)
+        self.assertIn('value="local_api"', DASHBOARD_HTML)
+        self.assertIn('id="imageInput"', DASHBOARD_HTML)
+        self.assertIn('value="responses"', DASHBOARD_HTML)
+
     def test_defaults_are_ready_for_local_translation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = DashboardController(Path(directory) / "settings.json")
@@ -227,6 +235,91 @@ class DashboardControllerTests(unittest.TestCase):
                 api_server.shutdown()
                 api_server.server_close()
                 api_thread.join(timeout=2)
+
+    def test_direct_test_returns_request_response_and_image_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = DashboardController(Path(directory) / "settings.json")
+            client = MagicMock()
+            client.generate_response.return_value = CodexResponse(
+                text="图片中有一个窗口。",
+                response_id="resp-direct",
+                model="gpt-test",
+            )
+            with patch.object(controller, "_client", return_value=client):
+                result = controller.test(
+                    {
+                        "mode": "direct",
+                        "text": "描述图片",
+                        "instructions": "使用中文",
+                        "model": "gpt-test",
+                        "reasoning_effort": "medium",
+                        "images": [
+                            {
+                                "data_url": "data:image/png;base64,AA==",
+                            }
+                        ],
+                    }
+                )
+
+        self.assertEqual(result["text"], "图片中有一个窗口。")
+        self.assertEqual(result["image_count"], 1)
+        self.assertEqual(result["response"]["id"], "resp-direct")
+        self.assertIn("base64", result["request"]["input"][0]["content"][1]["image_url"])
+        client.generate_response.assert_called_once()
+
+    def test_local_api_test_reaches_both_compatible_endpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = DashboardController(Path(directory) / "settings.json")
+            base_client = CodexSubscriptionClient(allow_login=False)
+            api_server = SubscriptionApiServer(
+                ("127.0.0.1", 0),
+                base_client,
+                api_key=controller.config["api_key"],
+            )
+            api_thread = threading.Thread(target=api_server.serve_forever, daemon=True)
+            api_thread.start()
+            try:
+                controller.config["port"] = api_server.server_port
+                with patch.object(
+                    CodexSubscriptionClient,
+                    "create_response",
+                    return_value=CodexResponse(
+                        text="API 链路成功",
+                        response_id="resp-api",
+                        model="gpt-test",
+                    ),
+                ):
+                    chat_result = controller.test(
+                        {
+                            "mode": "local_api",
+                            "api_format": "chat",
+                            "text": "测试 API",
+                            "model": "gpt-test",
+                            "reasoning_effort": "low",
+                        }
+                    )
+                    responses_result = controller.test(
+                        {
+                            "mode": "local_api",
+                            "api_format": "responses",
+                            "text": "测试 Responses API",
+                            "model": "gpt-test",
+                            "reasoning_effort": "low",
+                        }
+                    )
+            finally:
+                api_server.shutdown()
+                api_server.server_close()
+                api_thread.join(timeout=2)
+
+        self.assertEqual(chat_result["status"], 200)
+        self.assertEqual(chat_result["text"], "API 链路成功")
+        self.assertIn("/v1/chat/completions", chat_result["endpoint"])
+        self.assertEqual(chat_result["response"]["object"], "chat.completion")
+        self.assertEqual(responses_result["status"], 200)
+        self.assertEqual(responses_result["text"], "API 链路成功")
+        self.assertIn("/v1/responses", responses_result["endpoint"])
+        self.assertEqual(responses_result["response"]["object"], "response")
 
 
 if __name__ == "__main__":

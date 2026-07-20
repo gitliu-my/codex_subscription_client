@@ -12,7 +12,7 @@ OpenAI-compatible API，并提供命令行工具与浏览器管理页面。
 > 使用前请自行确认账号、订阅和适用条款允许你的使用方式。不要共享 token、转售
 > 账号或用它绕过订阅限制。
 
-当前版本：`0.5.1`（alpha）。项目不依赖本机 Codex CLI，也不经过模型中间商。
+当前版本：`0.6.0`（alpha）。项目不依赖本机 Codex CLI，也不经过模型中间商。
 
 ## 功能
 
@@ -22,7 +22,8 @@ OpenAI-compatible API，并提供命令行工具与浏览器管理页面。
 - 文本、图片和结构化 function calling。
 - Python SDK。
 - 本地 `/v1/models`、`/v1/responses` 和 `/v1/chat/completions`。
-- 本地管理 UI：登录、模型选择、服务启停和真实调用测试。
+- 宽屏管理 UI：登录、模型选择、服务启停、图片输入，以及订阅直连/本地 API
+  双路径测试。
 - 终端方向键配置向导，CLI 与浏览器管理页共用默认模型和推理档位。
 - macOS 独立终端程序，使用时不需要 Python 或虚拟环境。
 
@@ -149,7 +150,9 @@ csub ui
 
 管理页默认位于 `http://127.0.0.1:8320`。配置保存到
 `~/.codex_subscription/settings.json`，OAuth token 保存到
-`~/.codex_subscription/auth.json`，两者权限均限制为当前用户。
+`~/.codex_subscription/auth.json`，两者权限均限制为当前用户。调用实验台支持文本与
+最多四张图片，并可分别验证订阅后端、`/v1/responses` 和
+`/v1/chat/completions`；结果页同时保留文本、原始响应和脱敏后的实际请求。
 
 ## 本地 API
 

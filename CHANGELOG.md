@@ -2,6 +2,15 @@
 
 All notable changes are documented here.
 
+## 0.6.0 - 2026-07-20
+
+- Redesign the local dashboard for wide desktop screens and responsive mobile use.
+- Add text and image inputs to the dashboard test workbench.
+- Test either the subscription backend directly or the running local API service.
+- Test both `/v1/responses` and `/v1/chat/completions` with visible request metadata,
+  raw responses, HTTP status, and latency.
+- Add regression coverage for multimodal dashboard requests and both compatible API paths.
+
 ## 0.5.1 - 2026-07-20
 
 - Bundle and explicitly use a trusted CA certificate store for OAuth and model HTTPS requests.
