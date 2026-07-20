@@ -17,8 +17,9 @@ CLI / browser dashboard / Python caller
 ## Modules
 
 - `auth.py`: PKCE login, callback listener, token persistence, refresh, and status.
-- `client.py`: Codex client profile, model discovery, multimodal request conversion, backend
-  transport, retry, and SSE response parsing.
+- `client.py`: Codex client profile, model discovery, multimodal request conversion, retry,
+  and SSE response parsing.
+- `transport.py`: shared HTTPS opener with a packaged CA bundle and `SSL_CERT_FILE` override.
 - `server.py`: local OpenAI-compatible HTTP facade and browser-extension CORS policy.
 - `service.py`: shared background API lifecycle, authenticated control probes, and detached
   process management for both CLI and dashboard.

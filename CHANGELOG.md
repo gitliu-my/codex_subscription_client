@@ -2,6 +2,11 @@
 
 All notable changes are documented here.
 
+## 0.5.1 - 2026-07-20
+
+- Bundle and explicitly use a trusted CA certificate store for OAuth and model HTTPS requests.
+- Preserve `SSL_CERT_FILE` overrides for private or enterprise certificate authorities.
+
 ## 0.5.0 - 2026-07-20
 
 - Rename the terminal command to `csub` without retaining the old command alias.

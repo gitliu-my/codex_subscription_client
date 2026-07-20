@@ -22,6 +22,8 @@ The remote authentication and model backends are trusted to enforce subscription
 - Dashboard APIs require a random HttpOnly SameSite session cookie. Mutating requests also
   require a same-origin Host/Origin, JSON content type, and `X-Codex-Dashboard: 1`.
 - Dashboard pages deny framing and use a restrictive Content Security Policy.
+- Outbound OAuth and model HTTPS requests verify certificates against the packaged CA bundle.
+  `SSL_CERT_FILE` can replace it when an environment requires a private certificate authority.
 
 ## Credential storage
 

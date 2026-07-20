@@ -150,7 +150,7 @@ class ClientTests(unittest.TestCase):
         request = urllib.request.Request("https://example.com")
         with (
             patch(
-                "codex_subscription.client.urllib.request.urlopen",
+                "codex_subscription.client.urlopen",
                 side_effect=[
                     urllib.error.URLError("temporary TLS failure"),
                     FakeHttpResponse(b"OK"),

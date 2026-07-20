@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence, TypeVar
 
 from .auth import CodexOAuth, CodexOAuthError, extract_chatgpt_account_id
+from .transport import urlopen
 
 
 DEFAULT_BACKEND_URL = "https://chatgpt.com/backend-api/codex/responses"
@@ -229,7 +230,7 @@ class CodexSubscriptionClient:
         attempts = 3
         for attempt in range(attempts):
             try:
-                with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                with urlopen(request, timeout=self.timeout_seconds) as response:
                     return response.read()
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")
