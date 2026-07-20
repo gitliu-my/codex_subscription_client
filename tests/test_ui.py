@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import tempfile
@@ -8,11 +9,13 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from codex_subscription.ui import (
     DashboardController,
     DashboardServer,
     _dashboard_is_running,
+    launch_dashboard,
 )
 from codex_subscription.server import SubscriptionApiServer
 
@@ -87,6 +90,29 @@ class DashboardControllerTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=2)
 
+    def test_legacy_dashboard_page_is_detected_without_health_endpoint(self) -> None:
+        page_response = MagicMock()
+        page_response.__enter__.return_value.read.return_value = (
+            b"<title>Codex Subscription</title><h1>Codex Subscription</h1>"
+        )
+        with patch(
+            "codex_subscription.ui.urllib.request.urlopen",
+            side_effect=[OSError("health endpoint unavailable"), page_response],
+        ):
+            self.assertTrue(_dashboard_is_running("http://127.0.0.1:8320"))
+
+    @patch("codex_subscription.ui._dashboard_is_running", return_value=False)
+    @patch("codex_subscription.ui.DashboardServer")
+    def test_unrelated_port_conflict_has_actionable_error(
+        self,
+        server_class: MagicMock,
+        dashboard_running: MagicMock,
+    ) -> None:
+        server_class.side_effect = OSError(errno.EADDRINUSE, "Address already in use")
+
+        with self.assertRaisesRegex(ValueError, "csub ui --port 8321"):
+            launch_dashboard(open_browser=False)
+
     def test_dashboard_api_requires_page_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = DashboardController(Path(directory) / "settings.json")
@@ -150,24 +176,57 @@ class DashboardControllerTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=2)
 
+    def test_quitting_dashboard_does_not_stop_api(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = DashboardController(Path(directory) / "settings.json")
+            server = DashboardServer(("127.0.0.1", 0), controller)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_port}"
+                with urllib.request.urlopen(f"{base_url}/") as response:
+                    cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+                request = urllib.request.Request(
+                    f"{base_url}/api/quit",
+                    data=b"{}",
+                    method="POST",
+                    headers={
+                        "Cookie": cookie,
+                        "Content-Type": "application/json",
+                        "X-Codex-Dashboard": "1",
+                    },
+                )
+                with patch.object(controller, "stop_api") as stop_api:
+                    with urllib.request.urlopen(request) as response:
+                        self.assertEqual(response.status, 200)
+                    thread.join(timeout=2)
+                    stop_api.assert_not_called()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
     def test_external_api_server_is_reported_as_running(self) -> None:
-        api_server = SubscriptionApiServer(("127.0.0.1", 0), _NoopClient())
-        api_thread = threading.Thread(target=api_server.serve_forever, daemon=True)
-        api_thread.start()
-        try:
-            with tempfile.TemporaryDirectory() as directory:
-                controller = DashboardController(Path(directory) / "settings.json")
+        with tempfile.TemporaryDirectory() as directory:
+            controller = DashboardController(Path(directory) / "settings.json")
+            api_server = SubscriptionApiServer(
+                ("127.0.0.1", 0),
+                _NoopClient(),
+                api_key=controller.config["api_key"],
+            )
+            api_thread = threading.Thread(target=api_server.serve_forever, daemon=True)
+            api_thread.start()
+            try:
                 controller.config["port"] = api_server.server_port
                 server_state = controller.state()["server"]
 
-            self.assertTrue(server_state["running"])
-            self.assertTrue(server_state["external"])
-            self.assertFalse(server_state["managed"])
-            self.assertTrue(server_state["port_in_use"])
-        finally:
-            api_server.shutdown()
-            api_server.server_close()
-            api_thread.join(timeout=2)
+                self.assertTrue(server_state["running"])
+                self.assertEqual(server_state["status"], "running")
+                self.assertTrue(server_state["port_in_use"])
+            finally:
+                api_server.shutdown()
+                api_server.server_close()
+                api_thread.join(timeout=2)
 
 
 if __name__ == "__main__":

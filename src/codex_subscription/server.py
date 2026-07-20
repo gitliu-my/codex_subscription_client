@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import threading
 import time
 import uuid
 from dataclasses import asdict
@@ -115,6 +116,9 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
             return
         if not self._authorized():
             return
+        if self.path == "/__csub/status":
+            self._json(200, {"status": "running", "pid": os.getpid()})
+            return
         if self.path == "/v1/models":
             self._call(self.server.api.models)
             return
@@ -122,6 +126,10 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         if not self._authorized():
+            return
+        if self.path == "/__csub/stop":
+            self._json(200, {"status": "stopping"})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
         try:
             body = self._read_json()
@@ -260,6 +268,7 @@ def serve(
     port: int = 8317,
     api_key: str | None = None,
     client: CodexSubscriptionClient | None = None,
+    show_api_key: bool = True,
 ) -> None:
     if host not in {"127.0.0.1", "localhost"}:
         raise ValueError("Local API may only bind to 127.0.0.1 or localhost")
@@ -270,8 +279,12 @@ def serve(
         (host, port), client or CodexSubscriptionClient(), api_key=effective_api_key
     )
     print(f"Codex subscription API listening on http://{host}:{port}")
-    print(f"Local API key: {effective_api_key}")
-    server.serve_forever()
+    if show_api_key:
+        print(f"Local API key: {effective_api_key}")
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
 
 
 def _configured_allowed_origins() -> tuple[str, ...]:

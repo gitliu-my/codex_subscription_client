@@ -20,7 +20,6 @@ body:
         - Python SDK
         - CLI
         - Local API
-        - macOS App
     validations:
       required: true
   - type: textarea

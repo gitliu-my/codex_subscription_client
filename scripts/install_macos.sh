@@ -2,20 +2,22 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-CLI_SOURCE="$ROOT/dist/codex-subscription"
-APP_SOURCE="$ROOT/dist/Codex Subscription.app"
-CLI_DIR="$HOME/.local/bin"
-APP_DIR="$HOME/Applications"
+CLI_SOURCE="$ROOT/dist/csub"
+CLI_LAUNCHER_SOURCE="$ROOT/packaging/csub_launcher.sh"
+CLI_BIN_DIR="$HOME/.local/bin"
+CLI_RUNTIME_DIR="$HOME/.local/lib/csub"
 
-if [ ! -x "$CLI_SOURCE" ] || [ ! -d "$APP_SOURCE" ]; then
+if [ ! -x "$CLI_SOURCE/csub" ]; then
   "$ROOT/scripts/build_macos.sh"
 fi
 
-mkdir -p "$CLI_DIR" "$APP_DIR"
-install -m 755 "$CLI_SOURCE" "$CLI_DIR/codex-subscription"
-rm -rf "$APP_DIR/Codex Subscription.app"
-cp -R "$APP_SOURCE" "$APP_DIR/Codex Subscription.app"
+mkdir -p "$CLI_BIN_DIR" "$(dirname "$CLI_RUNTIME_DIR")"
+rm -f "$CLI_BIN_DIR/codex-subscription"
+rm -rf "$CLI_RUNTIME_DIR"
+cp -R "$CLI_SOURCE" "$CLI_RUNTIME_DIR"
+install -m 755 "$CLI_LAUNCHER_SOURCE" "$CLI_BIN_DIR/csub"
+rm -rf "$HOME/Applications/Codex Subscription.app"
 
 printf 'Installed:\n  %s\n  %s\n' \
-  "$CLI_DIR/codex-subscription" \
-  "$APP_DIR/Codex Subscription.app"
+  "$CLI_BIN_DIR/csub" \
+  "$CLI_RUNTIME_DIR"

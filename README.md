@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 将用户自己的 ChatGPT/Codex 订阅封装为 Python SDK 和仅监听本机的
-OpenAI-compatible API，并提供命令行工具与 macOS 管理 App。
+OpenAI-compatible API，并提供命令行工具与浏览器管理页面。
 
 > [!IMPORTANT]
 > 这是非官方实验项目，与 OpenAI 无隶属或背书关系。它使用 Codex 客户端采用的
@@ -12,7 +12,7 @@ OpenAI-compatible API，并提供命令行工具与 macOS 管理 App。
 > 使用前请自行确认账号、订阅和适用条款允许你的使用方式。不要共享 token、转售
 > 账号或用它绕过订阅限制。
 
-当前版本：`0.4.0`（alpha）。项目不依赖本机 Codex CLI，也不经过模型中间商。
+当前版本：`0.5.0`（alpha）。项目不依赖本机 Codex CLI，也不经过模型中间商。
 
 ## 功能
 
@@ -23,9 +23,31 @@ OpenAI-compatible API，并提供命令行工具与 macOS 管理 App。
 - Python SDK。
 - 本地 `/v1/models`、`/v1/responses` 和 `/v1/chat/completions`。
 - 本地管理 UI：登录、模型选择、服务启停和真实调用测试。
-- macOS 独立终端程序与 App，使用时不需要 Python 或虚拟环境。
+- 终端方向键配置向导，CLI 与浏览器管理页共用默认模型和推理档位。
+- macOS 独立终端程序，使用时不需要 Python 或虚拟环境。
 
 ## 快速开始
+
+### Homebrew 安装
+
+首个发布目标是 Apple Silicon macOS。Homebrew 6 需要显式信任第三方 Tap 中的
+Formula：
+
+```bash
+brew tap gitliu-my/tap
+brew trust --formula gitliu-my/tap/csub
+brew install gitliu-my/tap/csub
+```
+
+更新并重启后台 API：
+
+```bash
+brew update
+brew upgrade csub
+csub restart
+```
+
+发布维护流程见 [docs/RELEASING.md](docs/RELEASING.md)。
 
 ### 从源码运行
 
@@ -42,28 +64,68 @@ python3 -m pip install -e .
 登录并查看当前订阅实际开放的模型：
 
 ```bash
-codex-subscription login
-codex-subscription status
-codex-subscription models
+csub login
+csub status
+csub models
+```
+
+直接运行 `csub` 会正常显示命令帮助，不会报缺少参数。`csub status` 同时显示
+登录状态、默认模型、本地 API 地址和服务状态；服务状态可能为 `running`、
+`stopped`、`key_mismatch` 或 `port_in_use`。
+
+后台启动、停止或重启本地 API：
+
+```bash
+csub start
+csub status
+csub restart
+csub stop
+```
+
+UI 和这些命令管理同一个后台 API。关闭浏览器或终端管理页不会
+停止 API；服务日志保存在 `~/.codex_subscription/api.log`。
+
+使用方向键选择并保存默认模型和推理档位：
+
+```bash
+csub config
+```
+
+用 `↑`/`↓` 或 `j`/`k` 移动，回车确认，`q` 或 Esc 取消。模型列表来自当前
+订阅的实时接口，第二步只显示所选模型支持的推理档位。配置保存后，终端
+`ask`、`serve` 和浏览器管理页会共用这套默认值。
+
+脚本环境可以跳过交互菜单：
+
+```bash
+csub config \
+  --model gpt-5.6-luna \
+  --reasoning-effort medium
 ```
 
 发送文本或图片：
 
 ```bash
-codex-subscription ask "只回答 OK" \
+csub ask "只回答 OK" \
   --model gpt-5.6-luna \
   --reasoning-effort medium \
   --show-meta
 
-codex-subscription ask "描述这张图片" \
+csub ask "描述这张图片" \
   --image /absolute/path/to/image.png \
   --model gpt-5.6-luna
+```
+
+设置过默认值后，日常调用可以简化为：
+
+```bash
+csub ask "只回答 OK"
 ```
 
 `--show-meta` 显示请求模型、后端返回模型、推理档位和 response ID。模型自己在
 自然语言回答中声称的型号不可靠，应以响应元数据为准。
 
-### macOS 独立程序
+### macOS 独立 CLI
 
 ```bash
 ./scripts/build_macos.sh
@@ -72,20 +134,17 @@ codex-subscription ask "描述这张图片" \
 
 安装后可使用：
 
-- `~/.local/bin/codex-subscription`
-- `~/Applications/Codex Subscription.app`
+- `~/.local/bin/csub`
+- `~/.local/lib/csub/`（独立 CLI 运行时）
 
-构建脚本在隔离的 `.build-venv` 中使用 PyInstaller。`dist` 里的产物包含 Python
-运行时，日常使用无需激活虚拟环境。若系统尚未接受 Xcode 许可，先运行：
-
-```bash
-sudo xcodebuild -license accept
-```
+构建脚本在隔离的 `.build-venv` 中使用 PyInstaller。CLI 使用免解包的 `onedir`
+形式安装，避免单文件程序每次启动时等待数秒；运行时仍随程序提供，日常使用无需
+安装 Python 或激活虚拟环境。
 
 也可以直接从终端打开管理页：
 
 ```bash
-codex-subscription ui
+csub ui
 ```
 
 管理页默认位于 `http://127.0.0.1:8320`。配置保存到
@@ -94,20 +153,27 @@ codex-subscription ui
 
 ## 本地 API
 
-启动服务时必须使用 Bearer Key。省略 `--api-key` 时会随机生成并打印一个：
+启动服务时必须使用 Bearer Key。CLI 默认读取共享配置中的端口、模型、推理档位和
+随机生成的稳定 Key。日常使用后台服务：
 
 ```bash
-codex-subscription serve \
+csub start
+```
+
+需要在当前终端查看服务输出、按 `Ctrl+C` 停止时，使用前台调试模式：
+
+```bash
+csub serve \
   --host 127.0.0.1 \
   --port 8317 \
   --model gpt-5.6-luna \
   --reasoning-effort low
 ```
 
-需要给浏览器插件配置稳定 Key 时，推荐从管理页复制；也可以显式传入：
+前台调试时也可以显式覆盖 Key：
 
 ```bash
-codex-subscription serve --api-key 'replace-with-a-long-random-local-key'
+csub serve --api-key 'replace-with-a-long-random-local-key'
 ```
 
 Responses API：
@@ -160,13 +226,16 @@ for model in client.list_models():
 | 变量 | 用途 |
 | --- | --- |
 | `CODEX_SUBSCRIPTION_MODEL` | 默认模型，当前默认 `gpt-5.6-luna`。 |
-| `CODEX_SUBSCRIPTION_REASONING_EFFORT` | 默认推理档，默认 `medium`。 |
+| `CODEX_SUBSCRIPTION_REASONING_EFFORT` | 默认推理档，默认 `low`。 |
 | `CODEX_SUBSCRIPTION_TOKEN_FILE` | token 文件，默认 `~/.codex_subscription/auth.json`。 |
 | `CODEX_SUBSCRIPTION_TIMEOUT_SECONDS` | 模型请求超时，默认 180 秒。 |
 | `CODEX_SUBSCRIPTION_AUTO_LOGIN` | 设为 `0` 时禁止自动打开登录。 |
 | `CODEX_SUBSCRIPTION_OPEN_BROWSER` | 设为 `0` 时只打印授权地址。 |
 | `CODEX_SUBSCRIPTION_API_KEY` | `serve` 使用的本地 Bearer Key。 |
 | `CODEX_SUBSCRIPTION_ALLOWED_ORIGINS` | 额外允许的网页 CORS Origin。 |
+
+命令行参数优先级最高，其次是环境变量，再其次是
+`~/.codex_subscription/settings.json` 中保存的默认值。
 
 ## 安全说明
 
@@ -185,12 +254,11 @@ for model in client.list_models():
 - `stream=true` 会返回 SSE，但上游结果仍先在组件内聚合，不是逐 token 转发。
 - 暂未提供 Anthropic `/v1/messages`，不能直接替代 CLIProxyAPI 驱动 Claude Code。
 - 模型名称、可用推理档位和多模态能力由后端实时返回，不能保证长期不变。
-- 当前 macOS App 未签名和公证，适合本机源码构建，不是正式发行包。
 
 退出登录并删除本项目保存的 token：
 
 ```bash
-codex-subscription logout
+csub logout
 ```
 
 ## 参与贡献

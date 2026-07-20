@@ -2,6 +2,21 @@
 
 All notable changes are documented here.
 
+## 0.5.0 - 2026-07-20
+
+- Rename the terminal command to `csub` without retaining the old command alias.
+- Add an arrow-key terminal menu for choosing the default model and reasoning effort.
+- Share saved defaults between `config`, `ask`, `serve`, and the macOS dashboard.
+- Make terminal API startup reuse the saved port and stable local API key.
+- Preserve command-line and environment-variable overrides for automation.
+- Reopen an existing legacy dashboard and report unrelated port conflicts without a traceback.
+- Install the standalone CLI as an `onedir` runtime for substantially faster startup.
+- Show friendly help with no arguments and include the local API state in `csub status`.
+- Add a single detached API service controlled by both `csub start/stop/restart` and the UI.
+- Keep the API running when the dashboard exits.
+- Remove the redundant macOS App launcher in favor of `csub ui`.
+- Add Apple Silicon release packaging and automated Homebrew Formula publishing.
+
 ## 0.4.0 - 2026-07-18
 
 - Require a local Bearer key for every model API request.

@@ -24,6 +24,7 @@ venv/
 .build-venv/
 dist/
 build/
+release/
 *.egg-info/
 
 # Editors, operating systems, and local runtime output

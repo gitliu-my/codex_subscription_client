@@ -1,6 +1,6 @@
 [project]
 name = "codex-subscription-client"
-version = "0.4.0"
+version = "0.5.0"
 description = "Reusable ChatGPT/Codex OAuth authentication and subscription model client."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,8 +19,7 @@ Repository = "https://github.com/gitliu-my/codex_subscription_client"
 Issues = "https://github.com/gitliu-my/codex_subscription_client/issues"
 
 [project.scripts]
-codex-subscription = "codex_subscription.cli:main"
-codex-subscription-app = "codex_subscription.app:main"
+csub = "codex_subscription.cli:main"
 
 [project.optional-dependencies]
 build = ["pyinstaller>=6.0"]

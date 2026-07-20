@@ -1,0 +1,22 @@
+class Csub < Formula
+  desc "Use Codex subscription models through a local OpenAI-compatible API"
+  homepage "https://github.com/gitliu-my/codex_subscription_client"
+  url "https://github.com/gitliu-my/codex_subscription_client/releases/download/v@VERSION@/csub-macos-arm64.tar.gz"
+  version "@VERSION@"
+  sha256 "@ARM64_SHA256@"
+
+  depends_on arch: :arm64
+
+  def install
+    libexec.install Dir["*"]
+    (bin/"csub").write <<~SH
+      #!/bin/sh
+      exec "#{libexec}/csub" "$@"
+    SH
+    (bin/"csub").chmod 0755
+  end
+
+  test do
+    assert_match "usage: csub", shell_output("#{bin}/csub --help")
+  end
+end

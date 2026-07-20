@@ -2,12 +2,10 @@ from __future__ import annotations
 
 """Local browser dashboard for authentication and API server management."""
 
+import errno
 import json
-import http.client
 import http.cookies
-import os
 import secrets
-import tempfile
 import threading
 import urllib.parse
 import urllib.request
@@ -18,39 +16,30 @@ from typing import Any, Callable
 
 from .auth import CodexOAuth, CodexOAuthError
 from .client import CodexBackendError, CodexSubscriptionClient
-from .server import SubscriptionApiServer
-
-
-DEFAULT_SETTINGS_PATH = Path.home() / ".codex_subscription" / "settings.json"
-REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
+from .service import probe_api, start_api_service, stop_api_service
+from .settings import DEFAULT_SETTINGS_PATH, REASONING_EFFORTS, SettingsStore
 
 
 class DashboardController:
     def __init__(self, settings_path: Path | None = None) -> None:
         self.settings_path = settings_path or DEFAULT_SETTINGS_PATH
+        self.settings = SettingsStore(self.settings_path)
         self.auth = CodexOAuth()
-        self._lock = threading.RLock()
-        self._api_server: SubscriptionApiServer | None = None
-        self._api_thread: threading.Thread | None = None
-        self.config = self._load_settings()
-        self._save_settings()
+        self.config = self.settings.load_or_create()
 
     def state(self) -> dict[str, Any]:
         status = self.auth.status()
-        with self._lock:
-            managed = self._api_server is not None
-        external = False if managed else self._external_api_is_healthy()
-        port_in_use = managed or external or self._api_port_is_open()
+        api_status = probe_api(self.config)
         return {
             "auth": {
                 "logged_in": status.logged_in,
                 "expired": status.expired,
             },
             "server": {
-                "running": managed or external,
-                "managed": managed,
-                "external": external,
-                "port_in_use": port_in_use,
+                "status": api_status.state,
+                "running": api_status.state == "running",
+                "port_in_use": api_status.state != "stopped",
+                "pid": api_status.pid,
                 "url": self.api_url(),
             },
             "config": dict(self.config),
@@ -62,7 +51,8 @@ class DashboardController:
         return self.state()
 
     def logout(self) -> dict[str, Any]:
-        self.stop_api()
+        if probe_api(self.config).state == "running":
+            stop_api_service(self.config)
         self.auth.logout()
         return self.state()
 
@@ -81,31 +71,13 @@ class DashboardController:
 
     def start_api(self, value: dict[str, Any]) -> dict[str, Any]:
         config = self._validated_config(value)
-        self.stop_api()
-        client = self._client(config, allow_login=False)
-        server = SubscriptionApiServer(
-            (config["host"], config["port"]), client, api_key=config["api_key"]
-        )
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        with self._lock:
-            self.config = config
-            self._api_server = server
-            self._api_thread = thread
-            self._save_settings()
-        thread.start()
+        self.config = config
+        self._save_settings()
+        start_api_service(config)
         return self.state()
 
     def stop_api(self) -> dict[str, Any]:
-        with self._lock:
-            server = self._api_server
-            thread = self._api_thread
-            self._api_server = None
-            self._api_thread = None
-        if server is not None:
-            server.shutdown()
-            server.server_close()
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=2)
+        stop_api_service(self.config)
         return self.state()
 
     def test(self, text: str) -> dict[str, str]:
@@ -119,35 +91,6 @@ class DashboardController:
     def api_url(self) -> str:
         return f"http://{self.config['host']}:{self.config['port']}/v1/chat/completions"
 
-    def _external_api_is_healthy(self) -> bool:
-        headers = {}
-        if self.config["api_key"]:
-            headers["Authorization"] = f"Bearer {self.config['api_key']}"
-        connection = http.client.HTTPConnection(
-            self.config["host"], self.config["port"], timeout=0.5
-        )
-        try:
-            connection.request("GET", "/health", headers=headers)
-            response = connection.getresponse()
-            body = json.loads(response.read().decode("utf-8"))
-            return response.status == 200 and body.get("status") == "ok"
-        except (OSError, ValueError, json.JSONDecodeError):
-            return False
-        finally:
-            connection.close()
-
-    def _api_port_is_open(self) -> bool:
-        connection = http.client.HTTPConnection(
-            self.config["host"], self.config["port"], timeout=0.3
-        )
-        try:
-            connection.connect()
-            return True
-        except OSError:
-            return False
-        finally:
-            connection.close()
-
     def _client(
         self, config: dict[str, Any] | None = None, allow_login: bool = False
     ) -> CodexSubscriptionClient:
@@ -160,69 +103,13 @@ class DashboardController:
         )
 
     def _load_settings(self) -> dict[str, Any]:
-        defaults: dict[str, Any] = {
-            "host": "127.0.0.1",
-            "port": 8317,
-            "api_key": secrets.token_urlsafe(32),
-            "model": "gpt-5.6-luna",
-            "reasoning_effort": "low",
-        }
-        if not self.settings_path.exists():
-            return defaults
-        try:
-            loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
-            if not isinstance(loaded, dict):
-                raise ValueError("settings must be an object")
-            if loaded.get("api_key") in {None, "", "codex-local-translate"}:
-                loaded["api_key"] = defaults["api_key"]
-            return self._validated_config({**defaults, **loaded})
-        except (OSError, ValueError, json.JSONDecodeError):
-            return defaults
+        return self.settings.load()
 
     def _save_settings(self) -> None:
-        self.settings_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(self.settings_path.parent, 0o700)
-        fd, temporary_name = tempfile.mkstemp(
-            prefix=".settings-", dir=self.settings_path.parent
-        )
-        temporary_path = Path(temporary_name)
-        try:
-            os.chmod(temporary_path, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(self.config, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
-            os.replace(temporary_path, self.settings_path)
-            os.chmod(self.settings_path, 0o600)
-        except Exception:
-            temporary_path.unlink(missing_ok=True)
-            raise
+        self.config = self.settings.save(self.config)
 
     def _validated_config(self, value: dict[str, Any]) -> dict[str, Any]:
-        host = str(value.get("host") or "127.0.0.1")
-        if host not in {"127.0.0.1", "localhost"}:
-            raise ValueError("管理界面只允许 API 监听本机 127.0.0.1。")
-        try:
-            port = int(value.get("port", 8317))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("端口必须是数字。") from exc
-        if not 1 <= port <= 65535:
-            raise ValueError("端口必须在 1 到 65535 之间。")
-        model = str(value.get("model") or "").strip()
-        if not model:
-            raise ValueError("模型名称不能为空。")
-        effort = str(value.get("reasoning_effort") or "low")
-        if effort not in REASONING_EFFORTS:
-            raise ValueError("不支持的推理档位。")
-        api_key = str(value.get("api_key") or "").strip()
-        if len(api_key) < 24:
-            raise ValueError("本地 API Key 至少需要 24 个字符。")
-        return {
-            "host": host,
-            "port": port,
-            "api_key": api_key,
-            "model": model,
-            "reasoning_effort": effort,
-        }
+        return self.settings.validate(value)
 
 
 class DashboardServer(ThreadingHTTPServer):
@@ -276,7 +163,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/test": lambda: self.server.controller.test(str(body.get("text") or "")),
         }
         if path == "/api/quit":
-            self.server.controller.stop_api()
             self._json(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
@@ -403,20 +289,25 @@ def launch_dashboard(
     url = f"http://{host}:{port}"
     try:
         server = DashboardServer((host, port), DashboardController())
-    except OSError:
+    except OSError as exc:
         if _dashboard_is_running(url):
             print(f"Codex Subscription 管理界面已在运行：{url}")
             if open_browser:
                 webbrowser.open(url)
             return
-        raise
+        if exc.errno == errno.EADDRINUSE:
+            alternative_port = port + 1 if port < 65535 else port - 1
+            raise ValueError(
+                f"管理界面端口 {port} 已被其他程序占用；"
+                f"请运行 csub ui --port {alternative_port}。"
+            ) from None
+        raise ValueError(f"管理界面启动失败：{exc}") from exc
     print(f"Codex Subscription 管理界面：{url}")
     if open_browser:
         threading.Timer(0.35, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
     finally:
-        server.controller.stop_api()
         server.server_close()
 
 
@@ -425,8 +316,20 @@ def _dashboard_is_running(url: str) -> bool:
         with urllib.request.urlopen(f"{url}/health", timeout=2) as response:
             value = json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    else:
+        if isinstance(value, dict) and value.get("status") == "ok":
+            return True
+
+    try:
+        with urllib.request.urlopen(url, timeout=2) as response:
+            page = response.read(128 * 1024).decode("utf-8", errors="ignore")
+    except OSError:
         return False
-    return isinstance(value, dict) and value.get("status") == "ok"
+    return (
+        "<title>Codex Subscription</title>" in page
+        and "<h1>Codex Subscription</h1>" in page
+    )
 
 
 DASHBOARD_HTML = r'''<!doctype html>
@@ -465,7 +368,7 @@ const $=id=>document.getElementById(id);let state=null,subscriptionModels=[],loa
 async function request(path,options={}){const response=await fetch(path,{credentials:'same-origin',headers:{'Content-Type':'application/json','X-Codex-Dashboard':'1'},...options});const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败');return data}
 function notice(text,error=false){$('notice').textContent=text;$('notice').className=error?'notice error':'notice'}
 function config(){return{host:'127.0.0.1',port:Number($('port').value),api_key:$('apiKey').value,model:$('model').value,reasoning_effort:$('effort').value}}
-function render(value){state=value;const auth=value.auth,server=value.server,c=value.config;$('authText').textContent=auth.logged_in?(auth.expired?'登录已过期':'已登录'):'未登录';$('account').textContent=auth.logged_in?'登录凭据仅保存在本机':'';$('loginBtn').disabled=auth.logged_in&&!auth.expired;$('logoutBtn').disabled=!auth.logged_in;$('serverDot').className=server.running?'dot on':'dot';$('serverLabel').textContent=server.external?'API 由终端运行':server.managed?'API 由 App 运行':server.port_in_use?'API 端口被占用':'API 已停止';$('apiState').textContent=server.external?'运行中（终端管理）':server.managed?'运行中（App 管理）':server.port_in_use?'端口被其他程序占用':'已停止';$('serverMeta').textContent=server.external?'参数由终端启动命令决定，请在终端停止':server.managed?'由 App 管理，仅监听本机':'仅监听本机，不向局域网开放';$('startBtn').disabled=server.port_in_use||!auth.logged_in;$('stopBtn').disabled=!server.managed;$('endpoint').value=server.url;if(!formInitialized){$('model').value=c.model;$('apiKey').value=c.api_key;$('port').value=c.port;setEffortOptions(c.reasoning_effort);formInitialized=true}}
+function render(value){state=value;const auth=value.auth,server=value.server,c=value.config;const labels={running:'API 运行中',stopped:'API 已停止',key_mismatch:'API Key 不匹配',port_in_use:'API 端口被占用'};$('authText').textContent=auth.logged_in?(auth.expired?'登录已过期':'已登录'):'未登录';$('account').textContent=auth.logged_in?'登录凭据仅保存在本机':'';$('loginBtn').disabled=auth.logged_in&&!auth.expired;$('logoutBtn').disabled=!auth.logged_in;$('serverDot').className=server.running?'dot on':'dot';$('serverLabel').textContent=labels[server.status]||'API 状态未知';$('apiState').textContent=server.running?'运行中（后台服务）':labels[server.status]||'状态未知';$('serverMeta').textContent=server.running?'关闭管理页不会停止 API':'仅监听本机，不向局域网开放';$('startBtn').disabled=server.status!=='stopped'||!auth.logged_in;$('stopBtn').disabled=server.status!=='running';$('endpoint').value=server.url;if(!formInitialized){$('model').value=c.model;$('apiKey').value=c.api_key;$('port').value=c.port;setEffortOptions(c.reasoning_effort);formInitialized=true}}
 function setEffortOptions(preferred){const selected=subscriptionModels.find(m=>m.slug===$('model').value);const efforts=selected?.supported_reasoning_efforts?.length?selected.supported_reasoning_efforts:state.reasoning_efforts;const fallback=selected?.default_reasoning_effort||efforts[0];const value=efforts.includes(preferred)?preferred:fallback;$('effort').innerHTML=efforts.map(x=>`<option value="${x}">${x}</option>`).join('');$('effort').value=value}
 function renderModels(preferred){const current=subscriptionModels.some(m=>m.slug===preferred)?preferred:subscriptionModels[0]?.slug;if(!current)return;$('model').innerHTML=subscriptionModels.map(m=>`<option value="${m.slug}">${m.slug}</option>`).join('');$('model').value=current;setEffortOptions($('effort').value)}
 async function refresh(silent=false){try{const value=await request('/api/state');render(value);if(value.auth.logged_in&&!modelsAttempted)await loadModels(true);if(!silent)notice('本地状态已就绪。')}catch(e){if(!silent)notice(e.message,true)}}

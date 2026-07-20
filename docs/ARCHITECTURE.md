@@ -1,7 +1,7 @@
 # Architecture
 
 ```text
-CLI / macOS App / Python caller
+CLI / browser dashboard / Python caller
              |
              v
       codex_subscription
@@ -20,10 +20,20 @@ CLI / macOS App / Python caller
 - `client.py`: Codex client profile, model discovery, multimodal request conversion, backend
   transport, retry, and SSE response parsing.
 - `server.py`: local OpenAI-compatible HTTP facade and browser-extension CORS policy.
+- `service.py`: shared background API lifecycle, authenticated control probes, and detached
+  process management for both CLI and dashboard.
+- `settings.py`: shared, permission-restricted defaults for CLI and dashboard entry points.
+- `terminal_menu.py`: dependency-free arrow-key selector for interactive CLI configuration.
 - `ui.py`: local dashboard, settings persistence, API process management, and dashboard
   session protection.
-- `cli.py`: user-facing `login`, `status`, `models`, `ask`, `serve`, and `ui` commands.
+- `cli.py`: the `csub` entry point with `login`, `status`, `models`, `config`, `ask`,
+  `serve`, and `ui` commands.
 
 The reusable library is under `src/codex_subscription`. PyInstaller entry points under
 `packaging` are intentionally thin so the same modules power source installs and standalone
-artifacts.
+artifacts. The CLI is installed as an `onedir` runtime behind the lightweight `csub` launcher
+to avoid per-command extraction overhead.
+
+The dashboard and `csub start/stop/restart` control the same detached API process. Closing the
+dashboard only stops its own HTTP server; `csub serve` remains an explicit foreground debugging
+mode.
