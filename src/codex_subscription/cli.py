@@ -113,6 +113,12 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument(
         "--reasoning-effort", default=None, help="Default effort."
     )
+    serve_parser.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=None,
+        help="Maximum simultaneous upstream requests. Defaults to saved configuration.",
+    )
     serve_parser.add_argument("--no-login", action="store_true", help="Disable browser login.")
     ui_parser = subparsers.add_parser(
         "ui", help="Open the local browser dashboard."
@@ -144,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"chatgpt_account_id: {status.account_id}")
             print(f"default_model: {config['model']}")
             print(f"default_reasoning_effort: {config['reasoning_effort']}")
+            print(f"max_concurrency: {config['max_concurrency']}")
             api_status = probe_api(config)
             print(f"api_status: {api_status.state}")
             if api_status.pid is not None:
@@ -240,6 +247,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"response_model: {response.model or 'not_returned'}")
                 print(f"reasoning_effort: {client.reasoning_effort}")
                 print(f"response_id: {response.response_id or 'not_returned'}")
+                if response.usage:
+                    print(f"input_tokens: {response.usage.get('input_tokens', 'not_returned')}")
+                    print(f"output_tokens: {response.usage.get('output_tokens', 'not_returned')}")
+                    print(f"total_tokens: {response.usage.get('total_tokens', 'not_returned')}")
             return 0
 
         if args.command == "serve":
@@ -260,6 +271,11 @@ def main(argv: list[str] | None = None) -> int:
                     args.api_key or config["api_key"],
                     client,
                     show_api_key=os.environ.get("CSUB_BACKGROUND") != "1",
+                    max_concurrency=(
+                        args.max_concurrency
+                        if args.max_concurrency is not None
+                        else int(config.get("max_concurrency", 3))
+                    ),
                 )
             except KeyboardInterrupt:
                 print("\n本地 API 已停止。")

@@ -27,15 +27,20 @@ class FakeAuth:
 class FakeHttpResponse:
     def __init__(self, body: bytes) -> None:
         self.body = body
+        self.closed = False
 
     def __enter__(self) -> FakeHttpResponse:
         return self
 
     def __exit__(self, *args: object) -> None:
+        self.closed = True
         return None
 
     def read(self) -> bytes:
         return self.body
+
+    def __iter__(self):
+        return iter(self.body.splitlines(keepends=True))
 
 
 def event(data: dict[str, object]) -> str:
@@ -62,6 +67,11 @@ class ClientTests(unittest.TestCase):
                             "id": "resp-123",
                             "model": "gpt-5.6-luna",
                             "output": [],
+                            "usage": {
+                                "input_tokens": 12,
+                                "output_tokens": 3,
+                                "total_tokens": 15,
+                            },
                         },
                     }
                 ),
@@ -74,6 +84,54 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(response.tool_calls, [])
         self.assertEqual(response.response_id, "resp-123")
         self.assertEqual(response.model, "gpt-5.6-luna")
+        assert response.usage is not None
+        self.assertEqual(response.usage["total_tokens"], 15)
+
+    def test_streaming_client_yields_each_upstream_event(self) -> None:
+        body = (
+            event({"type": "response.created", "response": {}})
+            + "\n\n"
+            + event({"type": "response.output_text.delta", "delta": "O"})
+            + "\n\n"
+            + event(
+                {
+                    "type": "response.completed",
+                    "response": {"output": [], "usage": {"total_tokens": 1}},
+                }
+            )
+            + "\n\n"
+        ).encode()
+        client = CodexSubscriptionClient(
+            auth=FakeAuth(), allow_login=False  # type: ignore[arg-type]
+        )
+        with patch(
+            "codex_subscription.client.urlopen", return_value=FakeHttpResponse(body)
+        ):
+            events = list(client.iter_response_events([]))
+
+        self.assertEqual(
+            [item["type"] for item in events],
+            [
+                "response.created",
+                "response.output_text.delta",
+                "response.completed",
+            ],
+        )
+
+    def test_closing_event_iterator_closes_upstream_response(self) -> None:
+        body = (
+            event({"type": "response.created", "response": {}}) + "\n\n"
+        ).encode()
+        upstream = FakeHttpResponse(body)
+        client = CodexSubscriptionClient(
+            auth=FakeAuth(), allow_login=False  # type: ignore[arg-type]
+        )
+        with patch("codex_subscription.client.urlopen", return_value=upstream):
+            stream = client.iter_response_events([])
+            self.assertEqual(next(stream)["type"], "response.created")
+            stream.close()
+
+        self.assertTrue(upstream.closed)
 
     def test_parse_function_call(self) -> None:
         sse = "\n".join(

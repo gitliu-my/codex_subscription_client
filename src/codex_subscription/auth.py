@@ -129,6 +129,7 @@ class CodexOAuth:
         self.config = config or CodexOAuthConfig()
         self.notifier = notifier or print
         self.browser_opener = browser_opener or webbrowser.open
+        self._refresh_lock = threading.RLock()
 
     def status(self) -> AuthStatus:
         tokens = self.store.load()
@@ -142,6 +143,10 @@ class CodexOAuth:
         return AuthStatus(True, tokens.is_expired(), self.store.path, account_id)
 
     def login(self, timeout_seconds: int = 600, open_browser: bool = True) -> OAuthTokens:
+        with self._refresh_lock:
+            return self._login(timeout_seconds, open_browser)
+
+    def _login(self, timeout_seconds: int, open_browser: bool) -> OAuthTokens:
         verifier, challenge = create_pkce_pair()
         state = secrets.token_hex(16)
         authorization_url = self.build_authorization_url(challenge, state)
@@ -179,20 +184,45 @@ class CodexOAuth:
         if tokens and not tokens.is_expired():
             return tokens.access_token
 
-        if tokens:
-            try:
-                refreshed = self.refresh(tokens.refresh_token)
-            except CodexOAuthError:
-                if not allow_login:
-                    raise
-            else:
-                return refreshed.access_token
+        with self._refresh_lock:
+            tokens = self.store.load()
+            if tokens and not tokens.is_expired():
+                return tokens.access_token
+            if tokens:
+                try:
+                    refreshed = self._refresh_locked(tokens.refresh_token)
+                except CodexOAuthError:
+                    if not allow_login:
+                        raise
+                else:
+                    return refreshed.access_token
 
-        if not allow_login:
-            raise CodexOAuthError("没有可用的 Codex OAuth 登录态，请先执行网页登录。")
-        return self.login(open_browser=_env_bool("CODEX_SUBSCRIPTION_OPEN_BROWSER", True)).access_token
+            if not allow_login:
+                raise CodexOAuthError(
+                    "没有可用的 Codex OAuth 登录态，请先执行网页登录。"
+                )
+            return self._login(
+                600, _env_bool("CODEX_SUBSCRIPTION_OPEN_BROWSER", True)
+            ).access_token
 
     def refresh(self, refresh_token: str | None = None) -> OAuthTokens:
+        with self._refresh_lock:
+            return self._refresh_locked(refresh_token)
+
+    def refresh_after_unauthorized(self, rejected_access_token: str) -> OAuthTokens:
+        """Refresh once, or reuse credentials another request already refreshed."""
+
+        with self._refresh_lock:
+            existing = self.store.load()
+            if (
+                existing is not None
+                and existing.access_token != rejected_access_token
+                and not existing.is_expired()
+            ):
+                return existing
+            return self._refresh_locked()
+
+    def _refresh_locked(self, refresh_token: str | None = None) -> OAuthTokens:
         existing = self.store.load()
         token = refresh_token or (existing.refresh_token if existing else None)
         if not token:

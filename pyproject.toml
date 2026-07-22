@@ -1,6 +1,6 @@
 [project]
 name = "codex-subscription-client"
-version = "0.6.0"
+version = "0.7.0"
 description = "Reusable ChatGPT/Codex OAuth authentication and subscription model client."
 readme = "README.md"
 requires-python = ">=3.10"

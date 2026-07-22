@@ -127,6 +127,7 @@ class CliConfigurationTests(unittest.TestCase):
         self.assertEqual(client.model, "saved-model")
         self.assertEqual(client.reasoning_effort, "medium")
         self.assertFalse(client.allow_login)
+        self.assertEqual(serve_mock.call_args.kwargs["max_concurrency"], 3)
 
 if __name__ == "__main__":
     unittest.main()

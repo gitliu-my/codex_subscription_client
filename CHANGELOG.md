@@ -2,6 +2,25 @@
 
 All notable changes are documented here.
 
+## Unreleased
+
+## 0.7.0 - 2026-07-22
+
+- Forward upstream Responses SSE events as they arrive and convert live text/tool deltas for
+  Chat Completions clients.
+- Close upstream response streams when downstream clients disconnect.
+- Parse and expose upstream token usage in Responses and Chat Completions payloads.
+- Forward additional Responses request fields to the subscription backend.
+- Serialize OAuth refreshes across concurrent requests and reuse newly refreshed credentials.
+- Add a configurable upstream concurrency limit with bounded queueing and `429` responses.
+- Add a real streaming toggle to the dashboard workbench for both direct subscription and local
+  API tests.
+- Show first-token latency, total latency, live/final output speed, and input/output/total token
+  usage in the workbench.
+- Add optional Responses image generation with quality/size controls and ordered mixed
+  text/image rendering, including image downloads.
+- Summarize generated-image Base64 data in raw event views to keep the dashboard responsive.
+
 ## 0.6.0 - 2026-07-20
 
 - Redesign the local dashboard for wide desktop screens and responsive mobile use.

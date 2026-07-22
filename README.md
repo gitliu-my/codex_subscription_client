@@ -12,7 +12,7 @@ OpenAI-compatible API，并提供命令行工具与浏览器管理页面。
 > 使用前请自行确认账号、订阅和适用条款允许你的使用方式。不要共享 token、转售
 > 账号或用它绕过订阅限制。
 
-当前版本：`0.6.0`（alpha）。项目不依赖本机 Codex CLI，也不经过模型中间商。
+当前版本：`0.7.0`（alpha）。项目不依赖本机 Codex CLI，也不经过模型中间商。
 
 ## 功能
 
@@ -152,7 +152,10 @@ csub ui
 `~/.codex_subscription/settings.json`，OAuth token 保存到
 `~/.codex_subscription/auth.json`，两者权限均限制为当前用户。调用实验台支持文本与
 最多四张图片，并可分别验证订阅后端、`/v1/responses` 和
-`/v1/chat/completions`；结果页同时保留文本、原始响应和脱敏后的实际请求。
+`/v1/chat/completions`。实验台的流式开关会实时显示模型增量，并在完成后显示首字
+耗时、总耗时、实时/最终输出速率和输入/输出/总 Token；结果页同时保留文本、原始事件
+和脱敏后的实际请求。开启“图片生成”后，实验台会通过 Responses 的
+`image_generation` 工具按输出顺序展示文字和图片，并提供质量、尺寸与下载控制。
 
 ## 本地 API
 
@@ -170,7 +173,8 @@ csub serve \
   --host 127.0.0.1 \
   --port 8317 \
   --model gpt-5.6-luna \
-  --reasoning-effort low
+  --reasoning-effort low \
+  --max-concurrency 3
 ```
 
 前台调试时也可以显式覆盖 Key：
@@ -188,6 +192,15 @@ curl http://127.0.0.1:8317/v1/responses \
   -d '{"model":"gpt-5.6-luna","input":"只回答 OK"}'
 ```
 
+实时 SSE 输出：
+
+```bash
+curl --no-buffer http://127.0.0.1:8317/v1/responses \
+  -H 'Authorization: Bearer <local-api-key>' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-5.6-luna","input":"写三句话","stream":true}'
+```
+
 Chat Completions API：
 
 ```bash
@@ -203,6 +216,16 @@ curl http://127.0.0.1:8317/v1/chat/completions \
 浏览器扩展来源默认允许 CORS，普通网页来源默认拒绝。确实需要额外网页来源时，可通过
 `CODEX_SUBSCRIPTION_ALLOWED_ORIGINS` 传入逗号分隔的完整 Origin；只应添加你信任的
 来源。
+
+API 默认最多同时向订阅后端发送 3 个请求，超过上限的请求最多排队 30 秒，之后返回
+`429`。可通过管理页或 `--max-concurrency` 调整。OAuth Token 过期时只会有一个请求
+执行刷新，其余并发请求复用刷新后的 Token。
+
+`/v1/responses` 会实时转发上游 SSE，并从最终事件返回 `usage`。除本地负责转换的
+`model`、`input`、`tools`、`instructions` 和 `stream` 外，其他 Responses 请求字段会
+继续传给订阅后端；透传不代表上游一定支持该参数，例如当前后端会拒绝
+`max_output_tokens`。本地客户端断开时，csub 会关闭对应的上游响应连接，但远端是否
+立即终止生成仍由订阅后端决定。
 
 ## Python SDK
 
@@ -254,7 +277,8 @@ for model in client.list_models():
 ## 当前边界
 
 - OpenAI-compatible API 只实现常用子集，不是完整 OpenAI Platform API。
-- `stream=true` 会返回 SSE，但上游结果仍先在组件内聚合，不是逐 token 转发。
+- `stream=true` 会实时转发文本与工具参数增量；事件片段不保证恰好对应一个字符。
+- Responses 参数采用尽力透传，订阅后端不支持的官方参数仍会返回错误。
 - 暂未提供 Anthropic `/v1/messages`，不能直接替代 CLIProxyAPI 驱动 Claude Code。
 - 模型名称、可用推理档位和多模态能力由后端实时返回，不能保证长期不变。
 

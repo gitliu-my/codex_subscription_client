@@ -22,7 +22,16 @@ class SettingsStoreTests(unittest.TestCase):
             self.assertEqual(updated["port"], initial["port"])
             self.assertEqual(updated["model"], "gpt-test")
             self.assertEqual(updated["reasoning_effort"], "high")
+            self.assertEqual(updated["max_concurrency"], 3)
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    def test_max_concurrency_is_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+            config = store.load()
+            config["max_concurrency"] = 0
+            with self.assertRaisesRegex(ValueError, "1 到 32"):
+                store.save(config)
 
     def test_legacy_key_is_migrated_by_shared_store(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

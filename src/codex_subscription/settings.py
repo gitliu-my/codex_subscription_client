@@ -36,6 +36,7 @@ class SettingsStore:
             "api_key": secrets.token_urlsafe(32),
             "model": DEFAULT_MODEL,
             "reasoning_effort": DEFAULT_REASONING_EFFORT,
+            "max_concurrency": 3,
         }
 
     def load(self) -> dict[str, Any]:
@@ -95,10 +96,17 @@ class SettingsStore:
         api_key = str(value.get("api_key") or "").strip()
         if len(api_key) < 24:
             raise ValueError("本地 API Key 至少需要 24 个字符。")
+        try:
+            max_concurrency = int(value.get("max_concurrency", 3))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("最大并发数必须是数字。") from exc
+        if not 1 <= max_concurrency <= 32:
+            raise ValueError("最大并发数必须在 1 到 32 之间。")
         return {
             "host": host,
             "port": port,
             "api_key": api_key,
             "model": model,
             "reasoning_effort": effort,
+            "max_concurrency": max_concurrency,
         }

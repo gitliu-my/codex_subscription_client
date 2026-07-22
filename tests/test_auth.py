@@ -3,11 +3,14 @@ from __future__ import annotations
 import base64
 import json
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from codex_subscription.auth import (
+    CodexOAuth,
     FileTokenStore,
     OAuthTokens,
     create_pkce_pair,
@@ -43,6 +46,32 @@ class AuthTests(unittest.TestCase):
         encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
         token = f"header.{encoded}.signature"
         self.assertEqual(extract_chatgpt_account_id(token), "account-123")
+
+    def test_expired_token_is_refreshed_once_across_threads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = FileTokenStore(Path(directory) / "auth.json")
+            store.save(OAuthTokens("old", "refresh", int(time.time()) - 1))
+            auth = CodexOAuth(store=store)
+            refreshed = OAuthTokens("new", "refresh-2", int(time.time()) + 3600)
+            with patch.object(
+                auth, "_request_tokens", return_value=refreshed
+            ) as request_tokens:
+                results: list[str] = []
+                threads = [
+                    threading.Thread(
+                        target=lambda: results.append(
+                            auth.get_access_token(allow_login=False)
+                        )
+                    )
+                    for _ in range(5)
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=2)
+
+        self.assertEqual(results, ["new"] * 5)
+        request_tokens.assert_called_once()
 
 
 if __name__ == "__main__":

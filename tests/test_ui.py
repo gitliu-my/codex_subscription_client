@@ -16,6 +16,7 @@ from codex_subscription.ui import (
     DashboardController,
     DashboardServer,
     _dashboard_is_running,
+    _output_tokens_per_second,
     launch_dashboard,
 )
 from codex_subscription.client import CodexResponse, CodexSubscriptionClient
@@ -33,6 +34,27 @@ class DashboardControllerTests(unittest.TestCase):
         self.assertIn('value="local_api"', DASHBOARD_HTML)
         self.assertIn('id="imageInput"', DASHBOARD_HTML)
         self.assertIn('value="responses"', DASHBOARD_HTML)
+        self.assertIn('id="maxConcurrency"', DASHBOARD_HTML)
+        self.assertIn('id="streamMode"', DASHBOARD_HTML)
+        self.assertIn('id="metricUsage"', DASHBOARD_HTML)
+        self.assertIn('id="metricRate"', DASHBOARD_HTML)
+        self.assertIn('id="imageGeneration"', DASHBOARD_HTML)
+        self.assertIn('id="metricGeneratedImages"', DASHBOARD_HTML)
+        self.assertIn("response.body.getReader()", DASHBOARD_HTML)
+        self.assertIn("function liveRate", DASHBOARD_HTML)
+        self.assertIn("function renderOutput", DASHBOARD_HTML)
+
+    def test_output_rate_excludes_reasoning_tokens(self) -> None:
+        rate = _output_tokens_per_second(
+            {
+                "output_tokens": 38,
+                "output_tokens_details": {"reasoning_tokens": 10},
+            },
+            duration_ms=2000,
+            first_token_ms=1000,
+        )
+
+        self.assertEqual(rate, 28.0)
 
     def test_defaults_are_ready_for_local_translation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -267,6 +289,205 @@ class DashboardControllerTests(unittest.TestCase):
         self.assertIn("base64", result["request"]["input"][0]["content"][1]["image_url"])
         client.generate_response.assert_called_once()
 
+    def test_direct_stream_reports_deltas_first_token_and_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = DashboardController(Path(directory) / "settings.json")
+            client = MagicMock()
+            client.iter_response_events.return_value = iter(
+                [
+                    {"type": "response.output_text.delta", "delta": "流式"},
+                    {"type": "response.output_text.delta", "delta": "成功"},
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp-stream",
+                            "model": "gpt-stream",
+                            "output": [
+                                {
+                                    "type": "message",
+                                    "content": [
+                                        {"type": "output_text", "text": "流式成功"}
+                                    ],
+                                }
+                            ],
+                            "usage": {
+                                "input_tokens": 12,
+                                "output_tokens": 4,
+                                "total_tokens": 16,
+                            },
+                        },
+                    },
+                ]
+            )
+            with patch.object(controller, "_client", return_value=client):
+                messages = list(
+                    controller.test_stream(
+                        {
+                            "mode": "direct",
+                            "text": "测试流式",
+                            "model": "gpt-stream",
+                            "reasoning_effort": "low",
+                        }
+                    )
+                )
+
+        self.assertEqual(messages[0]["type"], "start")
+        self.assertEqual([item["delta"] for item in messages[1:3]], ["流式", "成功"])
+        completed = messages[-1]["result"]
+        self.assertEqual(completed["text"], "流式成功")
+        self.assertEqual(completed["usage"]["total_tokens"], 16)
+        self.assertIsNotNone(completed["first_token_ms"])
+        self.assertIn("output_tokens_per_second", completed)
+        self.assertTrue(completed["request"]["stream"])
+        client.iter_response_events.assert_called_once()
+
+    def test_direct_image_generation_returns_mixed_render_items(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = DashboardController(Path(directory) / "settings.json")
+            client = MagicMock()
+            client.create_response.return_value = CodexResponse(
+                text="这是生成结果。",
+                response_id="resp-image",
+                model="gpt-test",
+                output_items=[
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": "这是生成结果。"}
+                        ],
+                    },
+                    {
+                        "type": "image_generation_call",
+                        "id": "image-1",
+                        "result": "aW1hZ2U=",
+                    },
+                ],
+            )
+            with patch.object(controller, "_client", return_value=client):
+                result = controller.test(
+                    {
+                        "mode": "direct",
+                        "text": "生成一张图片并说明",
+                        "model": "gpt-test",
+                        "reasoning_effort": "low",
+                        "image_generation": True,
+                        "image_quality": "low",
+                        "image_size": "1024x1024",
+                    }
+                )
+
+        self.assertEqual(
+            [item["type"] for item in result["render_items"]], ["text", "image"]
+        )
+        self.assertTrue(result["generated_images"][0]["data_url"].startswith("data:image/"))
+        self.assertIn("generated image base64", result["response"]["output"][1]["result"])
+        request = result["request"]
+        self.assertEqual(request["tools"][0]["type"], "image_generation")
+        self.assertEqual(request["tools"][0]["quality"], "low")
+        call = client.create_response.call_args
+        self.assertEqual(call.kwargs["tools"][0]["size"], "1024x1024")
+
+    def test_stream_image_event_is_exposed_without_raw_base64(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = DashboardController(Path(directory) / "settings.json")
+            client = MagicMock()
+            client.iter_response_events.return_value = iter(
+                [
+                    {"type": "response.output_text.delta", "delta": "图片如下："},
+                    {
+                        "type": "response.output_item.done",
+                        "item": {
+                            "type": "image_generation_call",
+                            "id": "image-stream",
+                            "result": "aW1hZ2U=",
+                        },
+                    },
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp-image-stream",
+                            "model": "gpt-test",
+                            "output": [],
+                            "usage": {
+                                "input_tokens": 10,
+                                "output_tokens": 5,
+                                "total_tokens": 15,
+                            },
+                        },
+                    },
+                ]
+            )
+            with patch.object(controller, "_client", return_value=client):
+                messages = list(
+                    controller.test_stream(
+                        {
+                            "mode": "direct",
+                            "text": "生成图片",
+                            "model": "gpt-test",
+                            "reasoning_effort": "low",
+                            "image_generation": True,
+                        }
+                    )
+                )
+
+        image_message = next(message for message in messages if message.get("images"))
+        self.assertTrue(image_message["images"][0]["data_url"].startswith("data:image/"))
+        self.assertIn("generated image base64", image_message["event"]["item"]["result"])
+        self.assertEqual(messages[-1]["result"]["generated_images"][0]["id"], "image-stream")
+
+    def test_image_generation_rejects_chat_completions_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = DashboardController(Path(directory) / "settings.json")
+            with self.assertRaisesRegex(ValueError, "只支持 Responses"):
+                controller.test(
+                    {
+                        "mode": "local_api",
+                        "api_format": "chat",
+                        "image_generation": True,
+                    }
+                )
+
+    def test_dashboard_stream_endpoint_returns_ndjson(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = DashboardController(Path(directory) / "settings.json")
+            server = DashboardServer(("127.0.0.1", 0), controller)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_port}"
+                with urllib.request.urlopen(f"{base_url}/") as response:
+                    cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+                request = urllib.request.Request(
+                    f"{base_url}/api/test/stream",
+                    data=b"{}",
+                    method="POST",
+                    headers={
+                        "Cookie": cookie,
+                        "Content-Type": "application/json",
+                        "X-Codex-Dashboard": "1",
+                    },
+                )
+                with patch.object(
+                    controller,
+                    "test_stream",
+                    return_value=iter(
+                        [
+                            {"type": "start", "result": {"text": ""}},
+                            {"type": "delta", "delta": "OK"},
+                        ]
+                    ),
+                ):
+                    with urllib.request.urlopen(request) as response:
+                        events = [json.loads(line) for line in response]
+                        content_type = response.headers["Content-Type"]
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+        self.assertIn("application/x-ndjson", content_type)
+        self.assertEqual(events[1]["delta"], "OK")
+
     def test_local_api_test_reaches_both_compatible_endpoints(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = DashboardController(Path(directory) / "settings.json")
@@ -320,6 +541,70 @@ class DashboardControllerTests(unittest.TestCase):
         self.assertEqual(responses_result["text"], "API 链路成功")
         self.assertIn("/v1/responses", responses_result["endpoint"])
         self.assertEqual(responses_result["response"]["object"], "response")
+
+    def test_local_api_stream_uses_real_sse_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = DashboardController(Path(directory) / "settings.json")
+            base_client = CodexSubscriptionClient(allow_login=False)
+            api_server = SubscriptionApiServer(
+                ("127.0.0.1", 0),
+                base_client,
+                api_key=controller.config["api_key"],
+            )
+            api_thread = threading.Thread(target=api_server.serve_forever, daemon=True)
+            api_thread.start()
+            try:
+                controller.config["port"] = api_server.server_port
+                upstream_events = [
+                    {"type": "response.output_text.delta", "delta": "API"},
+                    {"type": "response.output_text.delta", "delta": " 流式"},
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp-local-stream",
+                            "model": "gpt-test",
+                            "output": [
+                                {
+                                    "type": "message",
+                                    "content": [
+                                        {"type": "output_text", "text": "API 流式"}
+                                    ],
+                                }
+                            ],
+                            "usage": {
+                                "input_tokens": 8,
+                                "output_tokens": 3,
+                                "total_tokens": 11,
+                            },
+                        },
+                    },
+                ]
+                with patch.object(
+                    CodexSubscriptionClient,
+                    "iter_response_events",
+                    return_value=iter(upstream_events),
+                ):
+                    messages = list(
+                        controller.test_stream(
+                            {
+                                "mode": "local_api",
+                                "api_format": "responses",
+                                "text": "测试本地流式",
+                                "model": "gpt-test",
+                                "reasoning_effort": "low",
+                            }
+                        )
+                    )
+            finally:
+                api_server.shutdown()
+                api_server.server_close()
+                api_thread.join(timeout=2)
+
+        result = messages[-1]["result"]
+        self.assertEqual(result["text"], "API 流式")
+        self.assertEqual(result["usage"]["total_tokens"], 11)
+        self.assertTrue(result["request"]["stream"])
+        self.assertIn("/v1/responses", result["endpoint"])
 
 
 if __name__ == "__main__":

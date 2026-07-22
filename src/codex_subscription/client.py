@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Sequence, TypeVar
+from typing import Any, Callable, Iterator, Sequence, TypeVar
 
 from .auth import CodexOAuth, CodexOAuthError, extract_chatgpt_account_id
 from .transport import urlopen
@@ -56,6 +56,7 @@ class CodexResponse:
     output_items: list[dict[str, Any]] = field(default_factory=list)
     response_id: str | None = None
     model: str | None = None
+    usage: dict[str, Any] | None = None
 
     def require_text(self) -> str:
         if self.tool_calls:
@@ -146,16 +147,24 @@ class CodexSubscriptionClient:
         instructions: str | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> CodexResponse:
-        payload = self._build_payload(input_items, tools, instructions, extra_body)
-        sse_text = self._run_authenticated(lambda token: self._send(payload, token))
-
-        parsed = parse_response_sse(sse_text)
+        parsed = parse_response_events(
+            self.iter_response_events(input_items, tools, instructions, extra_body)
+        )
         if parsed is None:
-            raise CodexBackendError(
-                "Codex backend 没有返回完整 response.completed 事件：\n"
-                + sse_text[-2000:]
-            )
+            raise CodexBackendError("Codex backend 没有返回完整 response.completed 事件。")
         return parsed
+
+    def iter_response_events(
+        self,
+        input_items: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        instructions: str | None = None,
+        extra_body: dict[str, Any] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield upstream Responses SSE events as soon as they arrive."""
+
+        payload = self._build_payload(input_items, tools, instructions, extra_body)
+        yield from self._stream_authenticated(payload)
 
     def list_models(self) -> list[SubscriptionModel]:
         """Return models currently exposed to this account and client profile."""
@@ -168,7 +177,9 @@ class CodexSubscriptionClient:
             return operation(access_token)
         except _UnauthorizedError:
             try:
-                access_token = self.auth.refresh().access_token
+                access_token = self.auth.refresh_after_unauthorized(
+                    access_token
+                ).access_token
             except CodexOAuthError:
                 if not self.allow_login:
                     raise
@@ -178,7 +189,30 @@ class CodexSubscriptionClient:
             except _UnauthorizedError as exc:
                 raise CodexBackendError("重新认证后 Codex backend 仍然返回 401。") from exc
 
-    def _send(self, payload: dict[str, Any], access_token: str) -> str:
+    def _stream_authenticated(
+        self, payload: dict[str, Any]
+    ) -> Iterator[dict[str, Any]]:
+        access_token = self.auth.get_access_token(allow_login=self.allow_login)
+        try:
+            yield from self._send_events(payload, access_token)
+            return
+        except _UnauthorizedError:
+            try:
+                access_token = self.auth.refresh_after_unauthorized(
+                    access_token
+                ).access_token
+            except CodexOAuthError:
+                if not self.allow_login:
+                    raise
+                access_token = self.auth.login().access_token
+        try:
+            yield from self._send_events(payload, access_token)
+        except _UnauthorizedError as exc:
+            raise CodexBackendError("重新认证后 Codex backend 仍然返回 401。") from exc
+
+    def _send_events(
+        self, payload: dict[str, Any], access_token: str
+    ) -> Iterator[dict[str, Any]]:
         account_id = extract_chatgpt_account_id(access_token)
         request = urllib.request.Request(
             self.backend_url,
@@ -186,7 +220,12 @@ class CodexSubscriptionClient:
             headers=self._headers(access_token, account_id, "text/event-stream"),
             method="POST",
         )
-        return self._read_request(request).decode("utf-8", errors="replace")
+        response = self._open_request(request)
+        try:
+            with response:
+                yield from _iter_sse_events(response)
+        except (urllib.error.URLError, TimeoutError, ssl.SSLError, OSError) as exc:
+            raise CodexBackendError(f"Codex backend 流式请求失败：{exc}") from exc
 
     def _send_models(self, access_token: str) -> list[SubscriptionModel]:
         account_id = extract_chatgpt_account_id(access_token)
@@ -227,11 +266,14 @@ class CodexSubscriptionClient:
         }
 
     def _read_request(self, request: urllib.request.Request) -> bytes:
+        with self._open_request(request) as response:
+            return response.read()
+
+    def _open_request(self, request: urllib.request.Request) -> Any:
         attempts = 3
         for attempt in range(attempts):
             try:
-                with urlopen(request, timeout=self.timeout_seconds) as response:
-                    return response.read()
+                return urlopen(request, timeout=self.timeout_seconds)
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")
                 if exc.code == 401:
@@ -319,27 +361,29 @@ def _parse_subscription_model(model: dict[str, Any]) -> SubscriptionModel:
 
 
 def parse_response_sse(sse_text: str) -> CodexResponse | None:
+    return parse_response_events(_iter_sse_events(sse_text.splitlines()))
+
+
+def parse_response_events(
+    events: Iterator[dict[str, Any]] | Sequence[dict[str, Any]],
+) -> CodexResponse | None:
     output_items: list[dict[str, Any]] = []
+    text_deltas: list[str] = []
     completed = False
     response_id: str | None = None
     response_model: str | None = None
+    usage: dict[str, Any] | None = None
 
-    for line in sse_text.splitlines():
-        if not line.startswith("data: "):
-            continue
-        raw = line.removeprefix("data: ").strip()
-        if not raw or raw == "[DONE]":
-            continue
-        try:
-            event = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-
+    for event in events:
         event_type = event.get("type")
         if event_type == "response.output_item.done":
             item = event.get("item")
             if isinstance(item, dict):
                 output_items.append(item)
+        elif event_type == "response.output_text.delta" and isinstance(
+            event.get("delta"), str
+        ):
+            text_deltas.append(event["delta"])
         elif event_type in {"response.completed", "response.done"}:
             completed = True
             response = event.get("response")
@@ -348,6 +392,8 @@ def parse_response_sse(sse_text: str) -> CodexResponse | None:
                     response_id = response["id"]
                 if isinstance(response.get("model"), str):
                     response_model = response["model"]
+                if isinstance(response.get("usage"), dict):
+                    usage = dict(response["usage"])
                 if not output_items:
                     fallback = response.get("output")
                     if isinstance(fallback, list):
@@ -381,12 +427,33 @@ def parse_response_sse(sse_text: str) -> CodexResponse | None:
                 )
 
     return CodexResponse(
-        text="".join(text_parts).strip(),
+        text=("".join(text_parts) or "".join(text_deltas)).strip(),
         tool_calls=tool_calls,
         output_items=output_items,
         response_id=response_id,
         model=response_model,
+        usage=usage,
     )
+
+
+def _iter_sse_events(lines: Any) -> Iterator[dict[str, Any]]:
+    for raw_line in lines:
+        if isinstance(raw_line, bytes):
+            line = raw_line.decode("utf-8", errors="replace")
+        else:
+            line = str(raw_line)
+        line = line.rstrip("\r\n")
+        if not line.startswith("data:"):
+            continue
+        raw = line.removeprefix("data:").strip()
+        if not raw or raw == "[DONE]":
+            continue
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            yield event
 
 
 def _parse_arguments(value: Any) -> dict[str, Any]:
