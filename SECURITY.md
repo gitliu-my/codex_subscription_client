@@ -19,6 +19,7 @@ This project is designed for one user on one trusted machine. The API and dashbo
 remain bound to loopback. Exposing either service through a reverse proxy, public tunnel,
 container port mapping, or LAN bind is outside the supported threat model.
 
-OAuth tokens and the local API key are sensitive credentials stored in user-only files.
-Anyone who can read those files or execute code as the same operating-system user should
-be considered able to use the subscription.
+OAuth tokens, application API keys, and the compatibility/control key are sensitive credentials.
+Application-key secrets are stored in macOS Keychain while metadata uses a user-only SQLite
+database. The compatibility key and OAuth tokens remain in user-only files. Anyone who can run
+code as the same operating-system user should still be considered able to use the subscription.

@@ -11,6 +11,8 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from codex_subscription.api_keys import ApiKeyStore, MemorySecretStore
+from codex_subscription.auth import AuthStatus
 from codex_subscription.ui import (
     DASHBOARD_HTML,
     DashboardController,
@@ -29,8 +31,25 @@ class _NoopClient:
 
 
 class DashboardControllerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.key_directory = tempfile.TemporaryDirectory()
+        self.api_keys = ApiKeyStore(
+            Path(self.key_directory.name) / "api_keys.db", MemorySecretStore()
+        )
+        self.api_keys_patch = patch(
+            "codex_subscription.ui.ApiKeyStore", return_value=self.api_keys
+        )
+        self.api_keys_patch.start()
+
+    def tearDown(self) -> None:
+        self.api_keys_patch.stop()
+        self.key_directory.cleanup()
+
     def test_dashboard_exposes_multimodal_dual_path_workbench(self) -> None:
+        self.assertIn('id="serviceView"', DASHBOARD_HTML)
         self.assertIn('id="testMode"', DASHBOARD_HTML)
+        self.assertIn('id="testModel"', DASHBOARD_HTML)
+        self.assertIn('id="testEffort"', DASHBOARD_HTML)
         self.assertIn('value="local_api"', DASHBOARD_HTML)
         self.assertIn('id="imageInput"', DASHBOARD_HTML)
         self.assertIn('value="responses"', DASHBOARD_HTML)
@@ -40,9 +59,83 @@ class DashboardControllerTests(unittest.TestCase):
         self.assertIn('id="metricRate"', DASHBOARD_HTML)
         self.assertIn('id="imageGeneration"', DASHBOARD_HTML)
         self.assertIn('id="metricGeneratedImages"', DASHBOARD_HTML)
+        self.assertIn('id="keyList"', DASHBOARD_HTML)
+        self.assertIn('id="keyDialog"', DASHBOARD_HTML)
+        self.assertIn('id="permissionDialog"', DASHBOARD_HTML)
+        self.assertIn("function revealApiKey", DASHBOARD_HTML)
+        self.assertIn("function editApiKeyPermissions", DASHBOARD_HTML)
+        self.assertIn("/api/keys/permissions", DASHBOARD_HTML)
         self.assertIn("response.body.getReader()", DASHBOARD_HTML)
         self.assertIn("function liveRate", DASHBOARD_HTML)
         self.assertIn("function renderOutput", DASHBOARD_HTML)
+        self.assertIn("/api/server/configure", DASHBOARD_HTML)
+        self.assertIn('<code id="chatEndpoint">', DASHBOARD_HTML)
+        self.assertIn('id="serverToggleBtn"', DASHBOARD_HTML)
+        self.assertIn('id="authToggleBtn"', DASHBOARD_HTML)
+        self.assertIn('id="authProfileBtn"', DASHBOARD_HTML)
+        self.assertIn('id="profileEmail"', DASHBOARD_HTML)
+        self.assertIn('id="profilePlan"', DASHBOARD_HTML)
+        self.assertIn('id="profileAccountId"', DASHBOARD_HTML)
+        self.assertIn("function toggleServer", DASHBOARD_HTML)
+        self.assertIn("function toggleAuth", DASHBOARD_HTML)
+        self.assertIn("function toggleAuthProfile", DASHBOARD_HTML)
+        self.assertIn(".lab-head{position:sticky", DASHBOARD_HTML)
+        self.assertIn("type==='error'?3600", DASHBOARD_HTML)
+        self.assertIn("$('newKeyName').focus()", DASHBOARD_HTML)
+        self.assertNotIn('id="endpoint"', DASHBOARD_HTML)
+        self.assertNotIn('id="startBtn"', DASHBOARD_HTML)
+        self.assertNotIn('id="stopBtn"', DASHBOARD_HTML)
+        self.assertNotIn('id="loginBtn"', DASHBOARD_HTML)
+        self.assertNotIn('id="logoutBtn"', DASHBOARD_HTML)
+        self.assertNotIn("仅监听本机，不向局域网开放", DASHBOARD_HTML)
+
+    def test_dashboard_separates_service_debugger_and_key_views(self) -> None:
+        service_view = DASHBOARD_HTML.index('id="serviceView"')
+        console_view = DASHBOARD_HTML.index('id="consoleView"')
+        workbench = DASHBOARD_HTML.index('class="panel lab"')
+        keys_view = DASHBOARD_HTML.index('id="keysView"')
+        key_list = DASHBOARD_HTML.index('id="keyList"')
+
+        self.assertLess(service_view, console_view)
+        self.assertLess(console_view, workbench)
+        self.assertLess(workbench, keys_view)
+        self.assertLess(keys_view, key_list)
+        self.assertIn('data-app-view="service"', DASHBOARD_HTML)
+        self.assertIn('data-app-view="console"', DASHBOARD_HTML)
+        self.assertIn('data-app-view="keys"', DASHBOARD_HTML)
+        self.assertIn("function showAppView", DASHBOARD_HTML)
+
+    @patch("codex_subscription.ui.start_api_service")
+    @patch("codex_subscription.ui.stop_api_service")
+    @patch("codex_subscription.ui.probe_api")
+    def test_configuring_running_api_restarts_with_new_settings(
+        self,
+        probe: MagicMock,
+        stop_service: MagicMock,
+        start_service: MagicMock,
+    ) -> None:
+        probe.return_value = MagicMock(state="running", pid=123)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            controller = DashboardController(path)
+            old_config = dict(controller.config)
+            new_config = {
+                **old_config,
+                "port": 8318,
+                "reasoning_effort": "medium",
+                "max_concurrency": 12,
+            }
+
+            result = controller.configure_api(new_config)
+
+            stop_service.assert_called_once_with(old_config)
+            start_service.assert_called_once_with(new_config)
+            self.assertEqual(controller.config, new_config)
+            self.assertEqual(result["config"], new_config)
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8")),
+                new_config,
+            )
 
     def test_output_rate_excludes_reasoning_tokens(self) -> None:
         rate = _output_tokens_per_second(
@@ -64,8 +157,49 @@ class DashboardControllerTests(unittest.TestCase):
         self.assertEqual(controller.config["port"], 8317)
         self.assertEqual(controller.config["model"], "gpt-5.6-luna")
         self.assertEqual(controller.config["reasoning_effort"], "low")
+        self.assertEqual(controller.config["max_concurrency"], 10)
         self.assertNotEqual(controller.config["api_key"], "codex-local-translate")
         self.assertGreaterEqual(len(controller.config["api_key"]), 32)
+        self.assertEqual(len(controller.state()["api_keys"]), 1)
+
+    def test_api_keys_can_be_created_revealed_disabled_and_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = DashboardController(Path(directory) / "settings.json")
+            created = controller.create_api_key({"name": "browser-translator"})
+            key_id = str(created["key"]["id"])
+
+            self.assertTrue(str(created["secret"]).startswith("csub_live_"))
+            self.assertEqual(
+                created["key"]["permissions"],
+                {"gpt-5.6-luna": ["low"]},
+            )
+            self.assertNotIn(
+                str(created["secret"]),
+                json.dumps(controller.state()),
+            )
+            self.assertEqual(
+                controller.reveal_api_key({"id": key_id})["secret"],
+                created["secret"],
+            )
+            permissions = controller.set_api_key_permissions(
+                {
+                    "id": key_id,
+                    "permissions": {
+                        "gpt-5.6-luna": ["low", "medium"],
+                        "gpt-5.6-sol": ["high"],
+                    },
+                }
+            )
+            self.assertEqual(
+                permissions["key"]["permissions"]["gpt-5.6-sol"],
+                ["high"],
+            )
+            disabled = controller.set_api_key_enabled(
+                {"id": key_id, "enabled": False}
+            )
+            self.assertFalse(disabled["key"]["enabled"])
+            controller.delete_api_key({"id": key_id})
+            self.assertEqual(len(controller.state()["api_keys"]), 1)
 
     def test_legacy_predictable_key_is_rotated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -146,6 +280,17 @@ class DashboardControllerTests(unittest.TestCase):
     def test_dashboard_api_requires_page_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = DashboardController(Path(directory) / "settings.json")
+            controller.auth.status = MagicMock(
+                return_value=AuthStatus(
+                    True,
+                    False,
+                    Path(directory) / "auth.json",
+                    "account-123",
+                    "Test User",
+                    "test@example.com",
+                    "prolite",
+                )
+            )
             server = DashboardServer(("127.0.0.1", 0), controller)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -169,8 +314,17 @@ class DashboardControllerTests(unittest.TestCase):
                 )
                 with urllib.request.urlopen(request) as response:
                     state = json.loads(response.read().decode("utf-8"))
-                self.assertNotIn("account_id", state["auth"])
+                self.assertEqual(
+                    state["auth"]["profile"],
+                    {
+                        "display_name": "Test User",
+                        "email": "test@example.com",
+                        "plan_type": "prolite",
+                        "account_id": "account-123",
+                    },
+                )
                 self.assertNotIn("token_path", state["auth"])
+                self.assertNotIn("access_token", json.dumps(state))
             finally:
                 server.shutdown()
                 server.server_close()

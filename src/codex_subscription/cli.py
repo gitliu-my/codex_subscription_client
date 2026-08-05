@@ -8,6 +8,7 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from .api_keys import ApiKeyStore
 from .auth import CodexOAuth, CodexOAuthError
 from .client import (
     CodexBackendError,
@@ -21,7 +22,7 @@ from .service import (
     start_api_service,
     stop_api_service,
 )
-from .settings import REASONING_EFFORTS, SettingsStore
+from .settings import DEFAULT_MAX_CONCURRENCY, REASONING_EFFORTS, SettingsStore
 from .terminal_menu import select_option
 from .ui import launch_dashboard
 
@@ -70,6 +71,61 @@ def main(argv: list[str] | None = None) -> int:
     )
     config_parser.add_argument(
         "--no-login", action="store_true", help="Fail instead of opening browser."
+    )
+
+    keys_parser = subparsers.add_parser(
+        "keys", help="Create and manage application API keys."
+    )
+    key_subparsers = keys_parser.add_subparsers(dest="key_command")
+    key_create = key_subparsers.add_parser("create", help="Create an API key.")
+    key_create.add_argument("name", help="Application name for this key.")
+    key_create_policy = key_create.add_mutually_exclusive_group()
+    key_create_policy.add_argument(
+        "--allow",
+        action="append",
+        default=[],
+        metavar="MODEL=EFFORTS",
+        help="Allow a model and comma-separated efforts; may be repeated.",
+    )
+    key_create_policy.add_argument(
+        "--unrestricted",
+        action="store_true",
+        help="Allow every model and reasoning effort.",
+    )
+    key_reveal = key_subparsers.add_parser("reveal", help="Reveal an API key.")
+    key_reveal.add_argument("key", help="Key ID or prefix.")
+    key_rename = key_subparsers.add_parser("rename", help="Rename an API key.")
+    key_rename.add_argument("key", help="Key ID or prefix.")
+    key_rename.add_argument("name", help="New application name.")
+    key_permissions = key_subparsers.add_parser(
+        "permissions", help="Replace model and reasoning permissions."
+    )
+    key_permissions.add_argument("key", help="Key ID or prefix.")
+    key_permission_policy = key_permissions.add_mutually_exclusive_group(
+        required=True
+    )
+    key_permission_policy.add_argument(
+        "--allow",
+        action="append",
+        default=[],
+        metavar="MODEL=EFFORTS",
+        help="Allow a model and comma-separated efforts; may be repeated.",
+    )
+    key_permission_policy.add_argument(
+        "--unrestricted",
+        action="store_true",
+        help="Allow every model and reasoning effort.",
+    )
+    for command, help_text in (
+        ("enable", "Enable an API key."),
+        ("disable", "Disable an API key."),
+    ):
+        key_parser = key_subparsers.add_parser(command, help=help_text)
+        key_parser.add_argument("key", help="Key ID or prefix.")
+    key_delete = key_subparsers.add_parser("delete", help="Delete an API key.")
+    key_delete.add_argument("key", help="Key ID or prefix.")
+    key_delete.add_argument(
+        "--yes", action="store_true", help="Confirm permanent deletion."
     )
 
     ask_parser = subparsers.add_parser("ask", help="Send one prompt to a subscription model.")
@@ -201,6 +257,72 @@ def main(argv: list[str] | None = None) -> int:
                 )
             return 0
 
+        if args.command == "keys":
+            config = SettingsStore().load_or_create()
+            keys = ApiKeyStore()
+            keys.ensure_legacy_key(config["api_key"])
+            if args.key_command is None:
+                print("STATUS\tTYPE\tPREFIX\tNAME\tPERMISSIONS\tREQUESTS\tLAST_USED")
+                for record in keys.list():
+                    print(
+                        f"{'enabled' if record.enabled else 'disabled'}\t"
+                        f"{'default' if record.is_system else 'app'}\t"
+                        f"{record.prefix}\t{record.name}\t"
+                        f"{_format_key_permissions(record.permissions)}\t"
+                        f"{record.request_count}\t"
+                        f"{record.last_used_at or '-'}"
+                    )
+                return 0
+            if args.key_command == "create":
+                if args.unrestricted:
+                    permissions = None
+                elif args.allow:
+                    permissions = _parse_key_permissions(args.allow)
+                else:
+                    permissions = {
+                        config["model"]: [config["reasoning_effort"]]
+                    }
+                record, secret = keys.create(args.name, permissions)
+                print(f"API Key 已创建：{record.name}")
+                print(f"id: {record.id}")
+                print(f"key: {secret}")
+                print(f"permissions: {_format_key_permissions(record.permissions)}")
+                return 0
+            if args.key_command == "reveal":
+                print(keys.reveal(args.key))
+                return 0
+            if args.key_command == "rename":
+                record = keys.rename(args.key, args.name)
+                print(f"API Key 已重命名：{record.name}")
+                return 0
+            if args.key_command == "permissions":
+                permissions = (
+                    None
+                    if args.unrestricted
+                    else _parse_key_permissions(args.allow)
+                )
+                record = keys.set_permissions(args.key, permissions)
+                print(
+                    f"API Key 权限已更新：{record.name} -> "
+                    f"{_format_key_permissions(record.permissions)}"
+                )
+                return 0
+            if args.key_command in {"enable", "disable"}:
+                enabled = args.key_command == "enable"
+                record = keys.set_enabled(args.key, enabled)
+                print(
+                    f"API Key 已{'启用' if record.enabled else '禁用'}："
+                    f"{record.name} ({record.prefix})"
+                )
+                return 0
+            if args.key_command == "delete":
+                if not args.yes:
+                    raise ValueError("删除 API Key 需要显式传入 --yes。")
+                record = keys.get(args.key)
+                keys.delete(record.id)
+                print(f"API Key 已删除：{record.name}")
+                return 0
+
         if args.command == "config":
             store = SettingsStore()
             config = store.load_or_create()
@@ -274,7 +396,11 @@ def main(argv: list[str] | None = None) -> int:
                     max_concurrency=(
                         args.max_concurrency
                         if args.max_concurrency is not None
-                        else int(config.get("max_concurrency", 3))
+                        else int(
+                            config.get(
+                                "max_concurrency", DEFAULT_MAX_CONCURRENCY
+                            )
+                        )
                     ),
                 )
             except KeyboardInterrupt:
@@ -295,6 +421,35 @@ def main(argv: list[str] | None = None) -> int:
 
 
 MenuSelector = Callable[[str, Sequence[str], int], int]
+
+
+def _parse_key_permissions(values: Sequence[str]) -> dict[str, list[str]]:
+    permissions: dict[str, list[str]] = {}
+    for value in values:
+        model, separator, effort_text = value.partition("=")
+        model = model.strip()
+        efforts = [effort.strip() for effort in effort_text.split(",") if effort.strip()]
+        if not separator or not model or not efforts:
+            raise ValueError(
+                "权限格式必须是 MODEL=EFFORT[,EFFORT]，例如 "
+                "gpt-5.6-luna=low,medium。"
+            )
+        bucket = permissions.setdefault(model, [])
+        for effort in efforts:
+            if effort not in bucket:
+                bucket.append(effort)
+    return permissions
+
+
+def _format_key_permissions(
+    permissions: dict[str, tuple[str, ...]] | None,
+) -> str:
+    if permissions is None:
+        return "all"
+    return ";".join(
+        f"{model}={','.join(efforts)}"
+        for model, efforts in permissions.items()
+    )
 
 
 def _choose_configuration(

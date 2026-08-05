@@ -2,7 +2,23 @@
 
 All notable changes are documented here.
 
-## Unreleased
+## 0.8.0 - 2026-08-05
+
+- Increase the default maximum upstream concurrency from 3 to 10.
+- Add independent application API keys with CLI/dashboard lifecycle management, recoverable
+  macOS Keychain secrets, SQLite metadata, live enable/disable, and request counters.
+- Separate the dashboard into focused API Console, API Debugger, and API Keys views with
+  responsive navigation, independent request settings, and clearly read-only endpoint displays.
+- Collapse persistent API and ChatGPT sidebar controls into compact state-aware actions, with a
+  two-column mobile layout instead of stacked status cards.
+- Show the authenticated ChatGPT display name in the sidebar and expose email, raw plan type,
+  and account ID in a local hover/click account popover without exposing OAuth credentials.
+- Auto-dismiss dashboard validation errors while returning focus to the invalid field, and keep
+  the API Debugger header and mode controls visible while the workbench scrolls.
+- Add per-key model and reasoning-effort allowlists, filtered model discovery, live `403`
+  enforcement for Responses and Chat Completions, and CLI/dashboard policy editors.
+- Migrate the existing single local key into a protected default compatibility key so current
+  clients and authenticated service controls continue to work.
 
 ## 0.7.0 - 2026-07-22
 

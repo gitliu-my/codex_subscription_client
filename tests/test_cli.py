@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import io
 import os
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from codex_subscription.api_keys import ApiKeyStore, MemorySecretStore
 from codex_subscription.cli import (
     _choose_configuration,
     _resolve_client_defaults,
@@ -62,6 +65,58 @@ class CliConfigurationTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertIn("usage: csub", output.getvalue())
+
+    def test_keys_command_creates_lists_and_reveals_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            keys = ApiKeyStore(
+                Path(directory) / "api_keys.db", MemorySecretStore()
+            )
+            settings = MagicMock()
+            settings.load_or_create.return_value = {
+                "api_key": "default-local-api-key-1234567890",
+                "model": "gpt-5.6-luna",
+                "reasoning_effort": "low",
+            }
+            output = io.StringIO()
+            with (
+                patch("codex_subscription.cli.ApiKeyStore", return_value=keys),
+                patch("codex_subscription.cli.SettingsStore", return_value=settings),
+                redirect_stdout(output),
+            ):
+                self.assertEqual(main(["keys", "create", "agent-a"]), 0)
+                created = next(item for item in keys.list() if not item.is_system)
+                self.assertEqual(
+                    created.permissions, {"gpt-5.6-luna": ("low",)}
+                )
+                secret = keys.reveal(created.id)
+                self.assertEqual(main(["keys", "reveal", created.prefix]), 0)
+                self.assertEqual(
+                    main(
+                        [
+                            "keys",
+                            "permissions",
+                            created.prefix,
+                            "--allow",
+                            "gpt-5.6-luna=low,medium",
+                            "--allow",
+                            "gpt-5.6-sol=high",
+                        ]
+                    ),
+                    0,
+                )
+                self.assertEqual(
+                    keys.get(created.id).permissions,
+                    {
+                        "gpt-5.6-luna": ("low", "medium"),
+                        "gpt-5.6-sol": ("high",),
+                    },
+                )
+                self.assertEqual(main(["keys"]), 0)
+
+        text = output.getvalue()
+        self.assertIn("agent-a", text)
+        self.assertIn(secret, text)
+        self.assertIn("STATUS\tTYPE\tPREFIX", text)
 
     def test_explicit_values_work_without_interactive_menu(self) -> None:
         def unexpected_selector(title: str, options: list[str], selected: int) -> int:
@@ -127,7 +182,7 @@ class CliConfigurationTests(unittest.TestCase):
         self.assertEqual(client.model, "saved-model")
         self.assertEqual(client.reasoning_effort, "medium")
         self.assertFalse(client.allow_login)
-        self.assertEqual(serve_mock.call_args.kwargs["max_concurrency"], 3)
+        self.assertEqual(serve_mock.call_args.kwargs["max_concurrency"], 10)
 
 if __name__ == "__main__":
     unittest.main()

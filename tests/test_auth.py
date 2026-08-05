@@ -15,6 +15,7 @@ from codex_subscription.auth import (
     OAuthTokens,
     create_pkce_pair,
     extract_chatgpt_account_id,
+    extract_chatgpt_identity,
 )
 
 
@@ -43,9 +44,38 @@ class AuthTests(unittest.TestCase):
                 "chatgpt_account_id": "account-123",
             }
         }
-        encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+        encoded = (
+            base64.urlsafe_b64encode(json.dumps(payload).encode())
+            .rstrip(b"=")
+            .decode()
+        )
         token = f"header.{encoded}.signature"
         self.assertEqual(extract_chatgpt_account_id(token), "account-123")
+
+    def test_extract_chatgpt_identity(self) -> None:
+        payload = {
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "account-123",
+                "chatgpt_plan_type": "prolite",
+            },
+            "https://api.openai.com/profile": {
+                "name": "Test User",
+                "email": "test@example.com",
+            },
+        }
+        encoded = (
+            base64.urlsafe_b64encode(json.dumps(payload).encode())
+            .rstrip(b"=")
+            .decode()
+        )
+        token = f"header.{encoded}.signature"
+
+        identity = extract_chatgpt_identity(token)
+
+        self.assertEqual(identity.account_id, "account-123")
+        self.assertEqual(identity.display_name, "Test User")
+        self.assertEqual(identity.email, "test@example.com")
+        self.assertEqual(identity.plan_type, "prolite")
 
     def test_expired_token_is_refreshed_once_across_threads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

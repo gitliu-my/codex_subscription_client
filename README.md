@@ -12,7 +12,7 @@ OpenAI-compatible API，并提供命令行工具与浏览器管理页面。
 > 使用前请自行确认账号、订阅和适用条款允许你的使用方式。不要共享 token、转售
 > 账号或用它绕过订阅限制。
 
-当前版本：`0.7.0`（alpha）。项目不依赖本机 Codex CLI，也不经过模型中间商。
+当前版本：`0.8.0`（alpha）。项目不依赖本机 Codex CLI，也不经过模型中间商。
 
 ## 功能
 
@@ -22,6 +22,8 @@ OpenAI-compatible API，并提供命令行工具与浏览器管理页面。
 - 文本、图片和结构化 function calling。
 - Python SDK。
 - 本地 `/v1/models`、`/v1/responses` 和 `/v1/chat/completions`。
+- 每个应用独立 API Key，可从 CLI 或本机管理页创建、查看、复制、重命名、
+  配置模型/推理档位白名单、禁用和删除；应用 Key 原始值保存在 macOS Keychain。
 - 宽屏管理 UI：登录、模型选择、服务启停、图片输入，以及订阅直连/本地 API
   双路径测试。
 - 终端方向键配置向导，CLI 与浏览器管理页共用默认模型和推理档位。
@@ -126,6 +128,23 @@ csub ask "只回答 OK"
 `--show-meta` 显示请求模型、后端返回模型、推理档位和 response ID。模型自己在
 自然语言回答中声称的型号不可靠，应以响应元数据为准。
 
+为不同应用创建独立 API Key：
+
+```bash
+csub keys create browser-translator
+csub keys create my-agent
+csub keys
+csub keys reveal csub_live_ab12cd34
+csub keys permissions csub_live_ab12cd34 \
+  --allow gpt-5.6-luna=low,medium \
+  --allow gpt-5.6-sol=low
+```
+
+还可以使用 `rename`、`enable`、`disable` 和 `delete --yes` 管理 Key。升级时，原有
+单一 Key 会自动登记为“默认兼容 Key”，已有调用不需要立即修改。新 Key 默认只允许
+当前配置的模型和推理档位；`create --unrestricted` 或
+`permissions KEY --unrestricted` 可显式开放全部权限。
+
 ### macOS 独立 CLI
 
 ```bash
@@ -150,17 +169,23 @@ csub ui
 
 管理页默认位于 `http://127.0.0.1:8320`。配置保存到
 `~/.codex_subscription/settings.json`，OAuth token 保存到
-`~/.codex_subscription/auth.json`，两者权限均限制为当前用户。调用实验台支持文本与
+`~/.codex_subscription/auth.json`，API Key 元数据保存到权限为 `0600` 的
+`~/.codex_subscription/api_keys.db`，应用 Key 原始值保存在 macOS Keychain。管理页将服务默认
+配置、单次请求调试和应用 Key 权限分别放在 `API 控制台`、`API 调试台` 与 `API Keys` 三个
+视图中；侧栏显示当前 ChatGPT 姓名，悬停或点击可查看邮箱、订阅类型与 Account ID，
+不会显示 OAuth token。控制台中的接口地址由本机端口自动生成，只读并可直接复制。调试台支持文本与
 最多四张图片，并可分别验证订阅后端、`/v1/responses` 和
 `/v1/chat/completions`。实验台的流式开关会实时显示模型增量，并在完成后显示首字
 耗时、总耗时、实时/最终输出速率和输入/输出/总 Token；结果页同时保留文本、原始事件
 和脱敏后的实际请求。开启“图片生成”后，实验台会通过 Responses 的
 `image_generation` 工具按输出顺序展示文字和图片，并提供质量、尺寸与下载控制。
+管理页中的 `API Keys` 独立视图可按 Key 配置模型与推理档位白名单，修改后对运行中的
+API 服务立即生效。
 
 ## 本地 API
 
-启动服务时必须使用 Bearer Key。CLI 默认读取共享配置中的端口、模型、推理档位和
-随机生成的稳定 Key。日常使用后台服务：
+启动服务时必须使用 Bearer Key。每个应用应使用 `csub keys create` 生成的独立 Key；
+升级前已有的稳定 Key 会作为默认兼容 Key 继续可用。日常使用后台服务：
 
 ```bash
 csub start
@@ -174,7 +199,7 @@ csub serve \
   --port 8317 \
   --model gpt-5.6-luna \
   --reasoning-effort low \
-  --max-concurrency 3
+  --max-concurrency 10
 ```
 
 前台调试时也可以显式覆盖 Key：
@@ -217,7 +242,7 @@ curl http://127.0.0.1:8317/v1/chat/completions \
 `CODEX_SUBSCRIPTION_ALLOWED_ORIGINS` 传入逗号分隔的完整 Origin；只应添加你信任的
 来源。
 
-API 默认最多同时向订阅后端发送 3 个请求，超过上限的请求最多排队 30 秒，之后返回
+API 默认最多同时向订阅后端发送 10 个请求，超过上限的请求最多排队 30 秒，之后返回
 `429`。可通过管理页或 `--max-concurrency` 调整。OAuth Token 过期时只会有一个请求
 执行刷新，其余并发请求复用刷新后的 Token。
 
@@ -268,7 +293,10 @@ for model in client.list_models():
 - API 和管理页只允许监听 `127.0.0.1`/`localhost`；不要通过反向代理公开到网络。
 - API 始终要求随机或显式 Bearer Key，`/health` 仅返回最小健康状态。
 - 管理页使用随机会话 Cookie、同源检查和 CSRF 请求头，不返回账号 ID 或 token 路径。
-- token 与本地 API Key 仍是磁盘上的敏感凭据。不要提交、分享或粘贴到 Issue。
+- 应用 Key 的原始值保存在 macOS Keychain；SQLite 只保存不可逆指纹和使用元数据。
+  OAuth token 和默认兼容 Key 仍受本机用户权限保护，不要提交、分享或粘贴到 Issue。
+- 应用 Key 的模型和推理档位白名单在请求进入订阅后端前校验；越权请求返回 `403`，
+  `/v1/models` 只列出该 Key 可访问的模型。
 - `0.4.0` 会自动替换旧版固定的 `codex-local-translate` Key。升级后请从管理页重新复制
   Key 到浏览器翻译插件。
 
@@ -280,6 +308,7 @@ for model in client.list_models():
 - `stream=true` 会实时转发文本与工具参数增量；事件片段不保证恰好对应一个字符。
 - Responses 参数采用尽力透传，订阅后端不支持的官方参数仍会返回错误。
 - 暂未提供 Anthropic `/v1/messages`，不能直接替代 CLIProxyAPI 驱动 Claude Code。
+- 暂未提供按 Key 的速率限制和 Token 配额，不能仅依靠它直接暴露公网服务。
 - 模型名称、可用推理档位和多模态能力由后端实时返回，不能保证长期不变。
 
 退出登录并删除本项目保存的 token：

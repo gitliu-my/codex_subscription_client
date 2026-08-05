@@ -23,6 +23,7 @@ from .transport import urlopen
 
 
 JWT_AUTH_CLAIM = "https://api.openai.com/auth"
+JWT_PROFILE_CLAIM = "https://api.openai.com/profile"
 
 
 class CodexOAuthError(RuntimeError):
@@ -70,11 +71,22 @@ class OAuthTokens:
 
 
 @dataclass(frozen=True)
+class ChatGPTIdentity:
+    account_id: str | None = None
+    display_name: str | None = None
+    email: str | None = None
+    plan_type: str | None = None
+
+
+@dataclass(frozen=True)
 class AuthStatus:
     logged_in: bool
     expired: bool
     token_path: Path
     account_id: str | None = None
+    display_name: str | None = None
+    email: str | None = None
+    plan_type: str | None = None
 
 
 class FileTokenStore:
@@ -135,12 +147,19 @@ class CodexOAuth:
         tokens = self.store.load()
         if tokens is None:
             return AuthStatus(False, False, self.store.path)
-        account_id: str | None = None
         try:
-            account_id = extract_chatgpt_account_id(tokens.access_token)
+            identity = extract_chatgpt_identity(tokens.access_token)
         except CodexOAuthError:
-            pass
-        return AuthStatus(True, tokens.is_expired(), self.store.path, account_id)
+            identity = ChatGPTIdentity()
+        return AuthStatus(
+            True,
+            tokens.is_expired(),
+            self.store.path,
+            identity.account_id,
+            identity.display_name,
+            identity.email,
+            identity.plan_type,
+        )
 
     def login(self, timeout_seconds: int = 600, open_browser: bool = True) -> OAuthTokens:
         with self._refresh_lock:
@@ -390,11 +409,32 @@ def decode_jwt_payload(token: str) -> dict[str, Any]:
     return payload
 
 
+def extract_chatgpt_identity(access_token: str) -> ChatGPTIdentity:
+    payload = decode_jwt_payload(access_token)
+    auth_claim = payload.get(JWT_AUTH_CLAIM)
+    profile_claim = payload.get(JWT_PROFILE_CLAIM)
+    auth = auth_claim if isinstance(auth_claim, dict) else {}
+    profile = profile_claim if isinstance(profile_claim, dict) else {}
+    return ChatGPTIdentity(
+        account_id=_string_claim(auth.get("chatgpt_account_id")),
+        display_name=_string_claim(profile.get("name")),
+        email=_string_claim(profile.get("email")),
+        plan_type=_string_claim(auth.get("chatgpt_plan_type")),
+    )
+
+
 def extract_chatgpt_account_id(access_token: str) -> str:
-    auth_claim = decode_jwt_payload(access_token).get(JWT_AUTH_CLAIM)
-    if not isinstance(auth_claim, dict) or not auth_claim.get("chatgpt_account_id"):
+    account_id = extract_chatgpt_identity(access_token).account_id
+    if not account_id:
         raise CodexOAuthError("access token 中没有 chatgpt_account_id。")
-    return str(auth_claim["chatgpt_account_id"])
+    return account_id
+
+
+def _string_claim(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _env_bool(name: str, default: bool) -> bool:

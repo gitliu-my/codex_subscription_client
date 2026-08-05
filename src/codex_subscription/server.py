@@ -12,15 +12,20 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Iterator
 
+from .api_keys import ApiKeyRecord, ApiKeyStore
 from .auth import CodexOAuthError
 from .client import CodexBackendError, CodexResponse, CodexSubscriptionClient
+from .settings import DEFAULT_MAX_CONCURRENCY
 
 
 class SubscriptionApi:
     def __init__(self, client: CodexSubscriptionClient) -> None:
         self.client = client
 
-    def models(self) -> dict[str, Any]:
+    def models(self, api_key: ApiKeyRecord | None = None) -> dict[str, Any]:
+        models = self.client.list_models()
+        if api_key is not None and api_key.permissions is not None:
+            models = [model for model in models if model.slug in api_key.permissions]
         return {
             "object": "list",
             "data": [
@@ -31,7 +36,7 @@ class SubscriptionApi:
                     "owned_by": "openai",
                     "metadata": asdict(model),
                 }
-                for model in self.client.list_models()
+                for model in models
             ],
         }
 
@@ -170,6 +175,7 @@ class SubscriptionApiServer(ThreadingHTTPServer):
         address: tuple[str, int],
         client: CodexSubscriptionClient,
         api_key: str | None = None,
+        api_keys: ApiKeyStore | None = None,
         allowed_origins: tuple[str, ...] | None = None,
         max_concurrency: int | None = None,
         queue_timeout_seconds: float = 30,
@@ -179,7 +185,12 @@ class SubscriptionApiServer(ThreadingHTTPServer):
         if api_key is not None and len(api_key) < 24:
             raise ValueError("Local API key must contain at least 24 characters")
         effective_max_concurrency = (
-            int(os.environ.get("CODEX_SUBSCRIPTION_MAX_CONCURRENCY", "3"))
+            int(
+                os.environ.get(
+                    "CODEX_SUBSCRIPTION_MAX_CONCURRENCY",
+                    str(DEFAULT_MAX_CONCURRENCY),
+                )
+            )
             if max_concurrency is None
             else max_concurrency
         )
@@ -190,6 +201,7 @@ class SubscriptionApiServer(ThreadingHTTPServer):
         super().__init__(address, SubscriptionApiHandler)
         self.api = SubscriptionApi(client)
         self.api_key = api_key or secrets.token_urlsafe(32)
+        self.api_keys = api_keys or _SingleApiKeyAuthenticator(self.api_key)
         self.allowed_origins = allowed_origins or _configured_allowed_origins()
         self.max_concurrency = effective_max_concurrency
         self.queue_timeout_seconds = queue_timeout_seconds
@@ -218,7 +230,11 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
             self._json(200, {"status": "running", "pid": os.getpid()})
             return
         if self.path == "/v1/models":
-            self._call(self.server.api.models)
+            self._call(
+                lambda: self.server.api.models(
+                    getattr(self, "_authenticated_api_key", None)
+                )
+            )
             return
         self._error(404, "Not found")
 
@@ -236,12 +252,16 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/v1/responses":
+            if not self._policy_authorized(body, responses_api=True):
+                return
             if body.get("stream") is True:
                 self._stream(self.server.api.responses_stream, body)
             else:
                 self._call(lambda: self.server.api.responses(body))
             return
         if self.path == "/v1/chat/completions":
+            if not self._policy_authorized(body, responses_api=False):
+                return
             if body.get("stream") is True:
                 self._stream(self.server.api.chat_completions_stream, body)
             else:
@@ -338,13 +358,46 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def _authorized(self) -> bool:
-        expected = self.server.api_key
+        self._authenticated_api_key = None
         provided = self.headers.get("Authorization", "")
-        if provided.startswith("Bearer ") and secrets.compare_digest(
-            provided.removeprefix("Bearer "), expected
-        ):
-            return True
+        if provided.startswith("Bearer "):
+            token = provided.removeprefix("Bearer ")
+            if self.path.startswith("/__csub/"):
+                if secrets.compare_digest(token, self.server.api_key):
+                    return True
+            else:
+                record = self.server.api_keys.authenticate(token)
+                if record is not None:
+                    self._authenticated_api_key = record
+                    return True
         self._error(401, "Invalid local API key")
+        return False
+
+    def _policy_authorized(
+        self,
+        body: dict[str, Any],
+        *,
+        responses_api: bool,
+    ) -> bool:
+        record = getattr(self, "_authenticated_api_key", None)
+        if record is None or record.permissions is None:
+            return True
+        model, effort = _requested_model_effort(
+            body,
+            self.server.api.client.model,
+            self.server.api.client.reasoning_effort,
+            responses_api=responses_api,
+        )
+        if record.allows(model, effort):
+            return True
+        if model not in record.permissions:
+            message = f"API key is not allowed to access model {model}"
+        else:
+            message = (
+                f"API key is not allowed to use reasoning effort {effort} "
+                f"with model {model}"
+            )
+        self._error(403, message)
         return False
 
     def _read_json(self) -> dict[str, Any]:
@@ -427,10 +480,13 @@ def serve(
     effective_api_key = (
         api_key or os.environ.get("CODEX_SUBSCRIPTION_API_KEY") or secrets.token_urlsafe(32)
     )
+    api_keys = ApiKeyStore()
+    api_keys.ensure_legacy_key(effective_api_key)
     server = SubscriptionApiServer(
         (host, port),
         client or CodexSubscriptionClient(),
         api_key=effective_api_key,
+        api_keys=api_keys,
         max_concurrency=max_concurrency,
     )
     print(f"Codex subscription API listening on http://{host}:{port}")
@@ -445,6 +501,47 @@ def serve(
 def _configured_allowed_origins() -> tuple[str, ...]:
     value = os.environ.get("CODEX_SUBSCRIPTION_ALLOWED_ORIGINS", "")
     return tuple(origin.strip() for origin in value.split(",") if origin.strip())
+
+
+class _SingleApiKeyAuthenticator:
+    """Compatibility adapter for embedded servers that pass one key directly."""
+
+    def __init__(self, api_key: str) -> None:
+        self.api_key = api_key
+
+    def authenticate(self, secret: str) -> ApiKeyRecord | None:
+        if not secrets.compare_digest(secret, self.api_key):
+            return None
+        return ApiKeyRecord(
+            id="legacy",
+            name="Legacy API Key",
+            prefix="legacy",
+            enabled=True,
+            is_system=True,
+            permissions=None,
+            created_at="",
+            updated_at="",
+            last_used_at=None,
+            request_count=0,
+        )
+
+
+def _requested_model_effort(
+    body: dict[str, Any],
+    default_model: str,
+    default_effort: str,
+    *,
+    responses_api: bool,
+) -> tuple[str, str]:
+    model = _optional_string(body.get("model")) or default_model
+    effort = default_effort
+    if responses_api:
+        reasoning = body.get("reasoning")
+        if isinstance(reasoning, dict):
+            effort = _optional_string(reasoning.get("effort")) or effort
+    else:
+        effort = _optional_string(body.get("reasoning_effort")) or effort
+    return model, effort
 
 
 def _normalize_responses_input(value: Any) -> list[dict[str, Any]]:

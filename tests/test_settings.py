@@ -22,7 +22,7 @@ class SettingsStoreTests(unittest.TestCase):
             self.assertEqual(updated["port"], initial["port"])
             self.assertEqual(updated["model"], "gpt-test")
             self.assertEqual(updated["reasoning_effort"], "high")
-            self.assertEqual(updated["max_concurrency"], 3)
+            self.assertEqual(updated["max_concurrency"], 10)
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
 
     def test_max_concurrency_is_validated(self) -> None:
@@ -52,6 +52,7 @@ class SettingsStoreTests(unittest.TestCase):
 
         self.assertNotEqual(config["api_key"], "codex-local-translate")
         self.assertGreaterEqual(len(config["api_key"]), 32)
+        self.assertEqual(config["max_concurrency"], 10)
 
 
 if __name__ == "__main__":

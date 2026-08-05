@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import json
 import threading
+import tempfile
 import unittest
 import urllib.error
 import urllib.request
+from pathlib import Path
 from unittest.mock import patch
 
-from codex_subscription.client import CodexResponse, CodexSubscriptionClient, ToolCall
+from codex_subscription.api_keys import ApiKeyStore, MemorySecretStore
+from codex_subscription.client import (
+    CodexResponse,
+    CodexSubscriptionClient,
+    SubscriptionModel,
+    ToolCall,
+)
 from codex_subscription.server import (
     SubscriptionApi,
     SubscriptionApiServer,
@@ -35,7 +44,139 @@ class _BlockingModelsClient:
         return []
 
 
+class _PolicyClient:
+    model = "gpt-5.6-luna"
+    reasoning_effort = "low"
+
+    def list_models(self):
+        return [
+            SubscriptionModel(
+                slug=slug,
+                display_name=slug,
+                description="",
+                default_reasoning_effort="low",
+                supported_reasoning_efforts=("low", "medium"),
+                input_modalities=("text",),
+            )
+            for slug in ("gpt-5.6-luna", "gpt-5.6-sol")
+        ]
+
+
 class ServerTests(unittest.TestCase):
+    def test_application_keys_are_independent_from_control_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            keys = ApiKeyStore(
+                Path(directory) / "api_keys.db", MemorySecretStore()
+            )
+            control_key = "control-local-api-key-1234567890"
+            keys.ensure_legacy_key(control_key)
+            app_record, app_key = keys.create("agent-a")
+            server = SubscriptionApiServer(
+                ("127.0.0.1", 0),
+                _NoopClient(),
+                api_key=control_key,
+                api_keys=keys,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_port}"
+                request = urllib.request.Request(
+                    f"{base_url}/v1/models",
+                    headers={"Authorization": f"Bearer {app_key}"},
+                )
+                with urllib.request.urlopen(request) as response:
+                    self.assertEqual(response.status, 200)
+
+                control_request = urllib.request.Request(
+                    f"{base_url}/__csub/status",
+                    headers={"Authorization": f"Bearer {app_key}"},
+                )
+                with self.assertRaises(urllib.error.HTTPError) as context:
+                    urllib.request.urlopen(control_request)
+                self.assertEqual(context.exception.code, 401)
+                context.exception.close()
+
+                keys.set_enabled(app_record.id, False)
+                with self.assertRaises(urllib.error.HTTPError) as context:
+                    urllib.request.urlopen(request)
+                self.assertEqual(context.exception.code, 401)
+                context.exception.close()
+                self.assertEqual(keys.get(app_record.id).request_count, 1)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_application_key_policy_filters_models_and_rejects_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            keys = ApiKeyStore(
+                Path(directory) / "api_keys.db", MemorySecretStore()
+            )
+            _, app_key = keys.create(
+                "restricted-agent", {"gpt-5.6-luna": ["low"]}
+            )
+            server = SubscriptionApiServer(
+                ("127.0.0.1", 0),
+                _PolicyClient(),
+                api_key="control-local-api-key-1234567890",
+                api_keys=keys,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_port}"
+                models_request = urllib.request.Request(
+                    f"{base_url}/v1/models",
+                    headers={"Authorization": f"Bearer {app_key}"},
+                )
+                with urllib.request.urlopen(models_request) as response:
+                    models = json.load(response)
+                self.assertEqual(
+                    [item["id"] for item in models["data"]],
+                    ["gpt-5.6-luna"],
+                )
+
+                denied_requests = (
+                    (
+                        "/v1/responses",
+                        {
+                            "model": "gpt-5.6-sol",
+                            "reasoning": {"effort": "low"},
+                            "input": "hello",
+                        },
+                        "model gpt-5.6-sol",
+                    ),
+                    (
+                        "/v1/chat/completions",
+                        {
+                            "model": "gpt-5.6-luna",
+                            "reasoning_effort": "medium",
+                            "messages": [{"role": "user", "content": "hello"}],
+                        },
+                        "reasoning effort medium",
+                    ),
+                )
+                for path, body, message in denied_requests:
+                    request = urllib.request.Request(
+                        f"{base_url}{path}",
+                        data=json.dumps(body).encode(),
+                        headers={
+                            "Authorization": f"Bearer {app_key}",
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as context:
+                        urllib.request.urlopen(request)
+                    self.assertEqual(context.exception.code, 403)
+                    error = json.loads(context.exception.read())
+                    self.assertIn(message, error["error"]["message"])
+                    context.exception.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
     def test_server_rejects_non_loopback_bind_and_short_key(self) -> None:
         with self.assertRaisesRegex(ValueError, "only bind"):
             SubscriptionApiServer(("0.0.0.0", 0), _NoopClient())

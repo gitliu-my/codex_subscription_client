@@ -3,8 +3,8 @@
 ## Protected assets
 
 - OAuth access and refresh tokens.
-- ChatGPT account identifier encoded in the access token.
-- Local API key.
+- ChatGPT profile fields and account identifier encoded in the access token.
+- Application API keys and the compatibility/control key.
 - Model requests and responses.
 
 ## Trust assumptions
@@ -16,20 +16,30 @@ The remote authentication and model backends are trusted to enforce subscription
 ## Network boundaries
 
 - The API and dashboard bind to loopback only.
-- Model endpoints require a Bearer key. `/health` reveals only `{"status":"ok"}`.
+- Model endpoints require an enabled application Bearer key. Internal control endpoints accept
+  only the compatibility/control key. `/health` reveals only `{"status":"ok"}`.
+- Restricted application keys expose only their allowed models through `/v1/models`; Responses
+  and Chat Completions requests with a disallowed model or reasoning effort fail with `403`
+  before an upstream request is created.
 - CORS reflects browser-extension origins and explicitly configured origins; arbitrary web
   origins are rejected.
 - Dashboard APIs require a random HttpOnly SameSite session cookie. Mutating requests also
   require a same-origin Host/Origin, JSON content type, and `X-Codex-Dashboard: 1`.
+- Display name, email, raw plan type, and account ID are returned only by the authenticated local
+  dashboard state endpoint. OAuth tokens and credential paths are never included.
 - Dashboard pages deny framing and use a restrictive Content Security Policy.
 - Outbound OAuth and model HTTPS requests verify certificates against the packaged CA bundle.
   `SSL_CERT_FILE` can replace it when an environment requires a private certificate authority.
 
 ## Credential storage
 
-Credentials are stored as JSON files under `~/.codex_subscription` with directory mode
-`0700` and file mode `0600`. They are not placed in app bundles or repository files. This is
-filesystem permission protection, not hardware-backed or macOS Keychain storage.
+OAuth credentials and shared settings are stored as JSON files under `~/.codex_subscription`
+with directory mode `0700` and file mode `0600`. Application-key metadata is stored in a `0600`
+SQLite database containing only SHA-256 fingerprints, state, and usage metadata. Recoverable
+application-key secrets are stored as generic-password items in macOS Keychain. Model and
+reasoning permission allowlists are non-secret metadata in the same SQLite database. The default
+compatibility key remains in the permission-restricted settings file during the compatibility
+migration period.
 
 ## Out of scope
 
@@ -37,3 +47,4 @@ filesystem permission protection, not hardware-backed or macOS Keychain storage.
 - Users deliberately exposing loopback services through a proxy or tunnel.
 - Changes to unsupported upstream protocols, model availability, or provider policy.
 - Abuse prevention beyond the limits enforced by the subscription backend.
+- Per-key rate limiting and token quotas; these remain future work.
