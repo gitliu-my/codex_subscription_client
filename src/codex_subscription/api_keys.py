@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Application API key metadata and recoverable macOS Keychain secrets."""
+"""Application API key metadata and recoverable platform secret storage."""
 
 import hashlib
 import json
@@ -10,8 +10,10 @@ import select
 import secrets
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -22,6 +24,7 @@ from typing import Iterator, Protocol
 
 
 DEFAULT_API_KEYS_PATH = Path.home() / ".codex_subscription" / "api_keys.db"
+DEFAULT_FILE_SECRETS_PATH = Path.home() / ".codex_subscription" / "secrets"
 KEYCHAIN_SERVICE = "com.gitliu-my.csub.api-key"
 ApiKeyPermissions = dict[str, tuple[str, ...]]
 
@@ -106,6 +109,72 @@ class MacOSKeychainSecretStore:
             )
 
 
+class FileSecretStore:
+    """User-only secret files for headless Linux installations."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        configured = os.environ.get("CODEX_SUBSCRIPTION_SECRETS_DIR")
+        self.path = Path(path or configured or DEFAULT_FILE_SECRETS_PATH).expanduser()
+        self.path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(self.path, 0o700)
+
+    def put(self, account: str, secret: str) -> None:
+        destination = self._path(account)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".secret-", dir=self.path
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            os.chmod(temporary_path, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(secret)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, destination)
+            os.chmod(destination, 0o600)
+        except Exception:
+            temporary_path.unlink(missing_ok=True)
+            raise
+
+    def get(self, account: str) -> str:
+        path = self._path(account)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(path, flags)
+        except FileNotFoundError as exc:
+            raise ValueError(
+                "Linux 密钥文件中未找到该 API Key，请删除后重新创建。"
+            ) from exc
+        except OSError as exc:
+            raise ValueError(f"无法安全读取 Linux API Key 密钥文件：{exc}") from exc
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("Linux API Key 密钥路径不是普通文件。")
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                descriptor = -1
+                secret = handle.read()
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if not secret:
+            raise ValueError("Linux 密钥文件返回了空的 API Key。")
+        return secret
+
+    def delete(self, account: str) -> None:
+        self._path(account).unlink(missing_ok=True)
+
+    def _path(self, account: str) -> Path:
+        value = str(account or "")
+        if (
+            not 1 <= len(value) <= 128
+            or any(character not in _SECRET_ACCOUNT_CHARACTERS for character in value)
+        ):
+            raise ValueError("API Key 密钥账户标识无效。")
+        return self.path / value
+
+
 class MemorySecretStore:
     """Small injectable secret backend used by tests and embedders."""
 
@@ -174,7 +243,7 @@ class ApiKeyStore:
         secret_store: SecretStore | None = None,
     ) -> None:
         self.path = path
-        self.secret_store = secret_store or MacOSKeychainSecretStore()
+        self.secret_store = secret_store or default_secret_store()
         self._initialize()
 
     def ensure_legacy_key(
@@ -283,7 +352,7 @@ class ApiKeyStore:
         record = self._resolve(selector)
         secret = self.secret_store.get(record.id)
         if not secrets.compare_digest(_fingerprint(secret), self._secret_hash(record.id)):
-            raise ValueError("macOS Keychain 中的密钥与本地元数据不匹配。")
+            raise ValueError("安全存储中的密钥与本地元数据不匹配。")
         return secret
 
     def rename(self, selector: str, name: str) -> ApiKeyRecord:
@@ -542,6 +611,19 @@ def _validate_secret(value: str) -> str:
 
 def _fingerprint(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+_SECRET_ACCOUNT_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."
+)
+
+
+def default_secret_store() -> SecretStore:
+    if sys.platform == "darwin":
+        return MacOSKeychainSecretStore()
+    if sys.platform.startswith("linux"):
+        return FileSecretStore()
+    raise ValueError("API Key 安全存储目前只支持 macOS 和 Linux。")
 
 
 def _now() -> str:

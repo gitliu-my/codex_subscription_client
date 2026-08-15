@@ -36,10 +36,12 @@ The remote authentication and model backends are trusted to enforce subscription
 OAuth credentials and shared settings are stored as JSON files under `~/.codex_subscription`
 with directory mode `0700` and file mode `0600`. Application-key metadata is stored in a `0600`
 SQLite database containing only SHA-256 fingerprints, state, and usage metadata. Recoverable
-application-key secrets are stored as generic-password items in macOS Keychain. Model and
-reasoning permission allowlists are non-secret metadata in the same SQLite database. The default
-compatibility key remains in the permission-restricted settings file during the compatibility
-migration period.
+application-key secrets are stored as generic-password items in macOS Keychain. On Linux, each
+secret is stored in a separate regular file under a `0700` directory with file mode `0600` and
+atomic replacement; this provides operating-system user isolation but not encryption at rest.
+Model and reasoning permission allowlists are non-secret metadata in the same SQLite database.
+The default compatibility key remains in the permission-restricted settings file during the
+compatibility migration period.
 
 ## Out of scope
 

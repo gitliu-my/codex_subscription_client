@@ -158,6 +158,7 @@ class DashboardController:
         mode, api_format, prompt, instructions, model, effort, images, image_tool = (
             self._test_options(value)
         )
+        max_output_tokens = _test_max_output_tokens(value.get("max_output_tokens"))
 
         started = time.monotonic()
         if mode == "direct":
@@ -221,6 +222,7 @@ class DashboardController:
                     model,
                     effort,
                     image_tool=image_tool,
+                    max_output_tokens=max_output_tokens,
                 )
             status, response_body = self._local_api_request(endpoint, request_body)
 
@@ -247,6 +249,7 @@ class DashboardController:
         mode, api_format, prompt, instructions, model, effort, images, image_tool = (
             self._test_options(value)
         )
+        max_output_tokens = _test_max_output_tokens(value.get("max_output_tokens"))
         started = time.monotonic()
 
         if mode == "direct":
@@ -290,6 +293,7 @@ class DashboardController:
                     effort,
                     stream=True,
                     image_tool=image_tool,
+                    max_output_tokens=max_output_tokens,
                 )
             events = self._local_api_stream(endpoint, request_body)
 
@@ -805,6 +809,7 @@ def _responses_test_body(
     effort: str,
     stream: bool = False,
     image_tool: dict[str, Any] | None = None,
+    max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
     content.extend(
@@ -825,7 +830,23 @@ def _responses_test_body(
         body["instructions"] = instructions
     if image_tool is not None:
         body["tools"] = [image_tool]
+    if max_output_tokens is not None:
+        body["max_output_tokens"] = max_output_tokens
     return body
+
+
+def _test_max_output_tokens(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError("Max output tokens 必须是正整数。")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Max output tokens 必须是正整数。") from exc
+    if parsed < 1:
+        raise ValueError("Max output tokens 必须是正整数。")
+    return parsed
 
 
 def _image_generation_tool(value: dict[str, Any]) -> dict[str, Any] | None:
@@ -1227,14 +1248,14 @@ body{background:#fff;color:var(--ink)}
   <div class="result-area"><div class="tabs"><button class="tab active" data-view="output" onclick="showResult('output')">输出</button><button class="tab" data-view="response" onclick="showResult('response')">原始响应</button><button class="tab" data-view="request" onclick="showResult('request')">实际请求</button></div><div id="testResult" class="result-view output empty">运行测试后，结果会显示在这里。</div></div>
 </section>
 <aside class="panel control-panel">
-  <section class="control-section debug-settings"><div class="section-title"><div><h2>本次请求</h2><p>仅影响调试台发出的请求</p></div></div><div class="two-fields"><div><label class="field-label" for="testModel">模型</label><select class="select" id="testModel"><option value="gpt-5.6-luna">gpt-5.6-luna</option></select></div><div><label class="field-label" for="testEffort">推理档位</label><select class="select" id="testEffort"></select></div></div></section>
+  <section class="control-section debug-settings"><div class="section-title"><div><h2>本次请求</h2><p>仅影响调试台发出的请求</p></div></div><div class="two-fields"><div><label class="field-label" for="testModel">模型</label><select class="select" id="testModel"><option value="gpt-5.6-luna">gpt-5.6-luna</option></select></div><div><label class="field-label" for="testEffort">推理档位</label><select class="select" id="testEffort"></select></div></div><div><label class="field-label" for="maxOutputTokens">Max output tokens</label><input class="field" id="maxOutputTokens" type="number" min="1" value="32000" disabled></div></section>
   <section class="control-section metrics-section"><div class="section-title"><div><h2>请求指标</h2><p>最近一次调用的实时统计</p></div></div><div class="result-head"><div class="metrics"><div><span>状态</span><strong id="metricStatus">等待</strong></div><div><span>首字</span><strong id="metricFirstToken">-</strong></div><div><span>总耗时</span><strong id="metricDuration">-</strong></div><div><span>输出速率</span><strong id="metricRate">-</strong></div><div><span>Token（入 / 出 / 总）</span><strong id="metricUsage">-</strong></div><div><span>模型</span><strong id="metricModel">-</strong></div><div><span>输入图片</span><strong id="metricImages">0</strong></div><div><span>生成图片</span><strong id="metricGeneratedImages">0</strong></div></div></div></section>
 </aside>
 </div>
 </section>
 <section id="keysView" class="app-view" hidden>
 <section class="panel key-panel">
-  <div class="key-head"><div class="key-title"><h2>应用 API Keys</h2><p>为不同应用维护独立凭据，原始值安全保存在 macOS Keychain</p></div><div class="key-create"><div><label class="field-label" for="newKeyName">应用名称</label><input class="field" id="newKeyName" maxlength="80" placeholder="例如：browser-translator"></div><button id="createKeyBtn" class="button primary" onclick="createApiKey()">创建 Key</button></div></div>
+  <div class="key-head"><div class="key-title"><h2>应用 API Keys</h2><p>为不同应用维护独立凭据，原始值保存在系统安全存储中</p></div><div class="key-create"><div><label class="field-label" for="newKeyName">应用名称</label><input class="field" id="newKeyName" maxlength="80" placeholder="例如：browser-translator"></div><button id="createKeyBtn" class="button primary" onclick="createApiKey()">创建 Key</button></div></div>
   <div class="key-columns" aria-hidden="true"><span>应用与 Key</span><span>模型与推理权限</span><span>调用情况</span><span>状态</span><span>操作</span></div>
   <div id="keyList" class="key-list"><div class="key-empty">正在读取 API Keys...</div></div>
 </section>
@@ -1273,7 +1294,7 @@ function copyRevealedKey(){copyValue($('revealedKey').value,'API Key')}
 function setEffortOptions(modelId,effortId,preferred){const model=subscriptionModels.find(item=>item.slug===$(modelId).value);const efforts=model?.supported_reasoning_efforts?.length?model.supported_reasoning_efforts:(state?.reasoning_efforts||['low','medium','high']);const fallback=model?.default_reasoning_effort||efforts[0];setOptions($(effortId),efforts,efforts.includes(preferred)?preferred:fallback)}
 function renderModels(servicePreferred,testPreferred){const values=subscriptionModels.map(item=>item.slug);if(!values.length)return;const serviceModel=values.includes(servicePreferred)?servicePreferred:values[0],testModel=values.includes(testPreferred)?testPreferred:serviceModel;setOptions($('model'),values,serviceModel);setEffortOptions('model','effort',$('effort').value);setOptions($('testModel'),values,testModel);setEffortOptions('testModel','testEffort',$('testEffort').value)}
 function syncEndpoint(){if(!state)return;const port=Number($('port').value)||state.config.port,base=`http://127.0.0.1:${port}/v1`;$('baseEndpoint').textContent=base;$('chatEndpoint').textContent=`${base}/chat/completions`;$('responsesEndpoint').textContent=`${base}/responses`}
-function syncTestMode(){const mode=selected('testMode'),local=mode==='local_api',imageMode=$('imageGeneration').checked;if(local&&imageMode)document.querySelector('input[name="apiFormat"][value="responses"]').checked=true;$('apiFormat').classList.toggle('dim',!local);$('apiFormat').querySelectorAll('input').forEach(input=>input.disabled=!local||testRunning||(imageMode&&input.value==='chat'));$('imageGenerationOptions').classList.toggle('hidden',!imageMode);const format=selected('apiFormat')==='responses'?'Responses':'Chat Completions';$('runContext').innerHTML=local?`<strong>本地 API · ${format}</strong><br>通过 Bearer Key 请求真实的 127.0.0.1 服务`:'<strong>订阅直连</strong><br>绕过本地 API，直接验证 OAuth 与模型后端';$('runBtn').textContent=testRunning?'请求中...':'运行请求';$('runBtn').disabled=testRunning||!state?.auth.logged_in||(local&&!state?.server.running);$('streamMode').disabled=testRunning;$('imageGeneration').disabled=testRunning;$('imageQuality').disabled=testRunning;$('imageSize').disabled=testRunning;syncEndpoint()}
+function syncTestMode(){const mode=selected('testMode'),local=mode==='local_api',imageMode=$('imageGeneration').checked;if(local&&imageMode)document.querySelector('input[name="apiFormat"][value="responses"]').checked=true;$('apiFormat').classList.toggle('dim',!local);$('apiFormat').querySelectorAll('input').forEach(input=>input.disabled=!local||testRunning||(imageMode&&input.value==='chat'));$('imageGenerationOptions').classList.toggle('hidden',!imageMode);const responses=local&&selected('apiFormat')==='responses',format=responses?'Responses':'Chat Completions';$('runContext').innerHTML=local?`<strong>本地 API · ${format}</strong><br>通过 Bearer Key 请求真实的 127.0.0.1 服务`:'<strong>订阅直连</strong><br>绕过本地 API，直接验证 OAuth 与模型后端';$('runBtn').textContent=testRunning?'请求中...':'运行请求';$('runBtn').disabled=testRunning||!state?.auth.logged_in||(local&&!state?.server.running);$('streamMode').disabled=testRunning;$('imageGeneration').disabled=testRunning;$('imageQuality').disabled=testRunning;$('imageSize').disabled=testRunning;$('maxOutputTokens').disabled=testRunning||!responses;syncEndpoint()}
 async function refresh(silent=false){try{const value=await request('/api/state');render(value);if(value.auth.logged_in&&!modelsAttempted)await loadModels(true);if(!silent)notice('本地状态已就绪。','success')}catch(e){if(!silent)notice(e.message,'error')}}
 async function action(label,path,body={}){notice(`${label}...`);try{const data=await request(path,{method:'POST',body:JSON.stringify(body)});if(data.auth)render(data);notice(`${label}完成。`,'success');return data}catch(e){notice(e.message,'error');throw e}}
 async function login(){await action('等待浏览器授权','/api/login');modelsAttempted=false;await loadModels()}
@@ -1296,7 +1317,7 @@ function updateTestMetrics(result){$('metricStatus').textContent=result?.streami
 function appendTextItem(result,text){if(!text)return;const items=result.render_items||(result.render_items=[]),last=items[items.length-1];if(last?.type==='text')last.text+=text;else items.push({type:'text',text})}
 function upsertImageItem(result,image){const images=result.generated_images||(result.generated_images=[]),existing=images.find(item=>item.id===image.id);if(existing)Object.assign(existing,image);else images.push({...image});const items=result.render_items||(result.render_items=[]),rendered=items.find(item=>item.type==='image'&&item.id===image.id);if(rendered)Object.assign(rendered,image);else items.push({type:'image',...image})}
 function consumeStreamEvent(message){if(message.type==='error')throw new Error(message.error||'流式请求失败。');if(message.type==='start'){lastTest={...message.result,streaming:true};rateSamples=[];updateTestMetrics(lastTest);showResult('output');return}if(!lastTest)return;if(message.event)lastTest.response.events.push(message.event);if(message.delta){lastTest.text+=message.delta;appendTextItem(lastTest,message.delta);if(lastTest.first_token_ms==null)lastTest.first_token_ms=message.elapsed_ms;const rate=liveRate(message.delta,message.elapsed_ms);if(rate!=null)lastTest.live_rate=rate}for(const image of message.images||[])upsertImageItem(lastTest,image);if(message.usage){lastTest.usage=message.usage;lastTest.response.usage=message.usage}updateTestMetrics(lastTest);if(resultView==='output')showResult('output');if(message.type==='complete'){const renderItems=lastTest.render_items,generatedImages=lastTest.generated_images;lastTest={...message.result,render_items:renderItems?.length?renderItems:message.result.render_items,generated_images:generatedImages?.length?generatedImages:message.result.generated_images};updateTestMetrics(lastTest);showResult(resultView)}}
-async function runTest(){const mode=selected('testMode');if(mode==='local_api'&&!state?.server.running){notice('请先启动本地 API 服务。','error');return}testRunning=true;syncTestMode();lastTest=null;rateSamples=[];$('testResult').textContent='正在建立连接...';$('testResult').className='result-view output';$('metricStatus').textContent='连接中';$('metricFirstToken').textContent='-';$('metricDuration').textContent='-';$('metricRate').textContent='-';$('metricUsage').textContent='-';$('metricGeneratedImages').textContent='0';const payload={mode,api_format:selected('apiFormat'),text:$('testText').value,instructions:$('instructions').value,model:$('testModel').value,reasoning_effort:$('testEffort').value,images,image_generation:$('imageGeneration').checked,image_quality:$('imageQuality').value,image_size:$('imageSize').value};try{if($('streamMode').checked)await streamRequest('/api/test/stream',payload,consumeStreamEvent);else{lastTest=await request('/api/test',{method:'POST',body:JSON.stringify(payload)});updateTestMetrics(lastTest);showResult('output')}notice(mode==='local_api'?'本地 API 链路测试成功。':'订阅直连测试成功。','success')}catch(e){lastTest={error:e.message};$('metricStatus').textContent='失败';$('metricDuration').textContent='-';$('metricRate').textContent='-';notice(e.message,'error');showResult('output')}finally{testRunning=false;syncTestMode()}}
+async function runTest(){const mode=selected('testMode'),apiFormat=selected('apiFormat');if(mode==='local_api'&&!state?.server.running){notice('请先启动本地 API 服务。','error');return}testRunning=true;syncTestMode();lastTest=null;rateSamples=[];$('testResult').textContent='正在建立连接...';$('testResult').className='result-view output';$('metricStatus').textContent='连接中';$('metricFirstToken').textContent='-';$('metricDuration').textContent='-';$('metricRate').textContent='-';$('metricUsage').textContent='-';$('metricGeneratedImages').textContent='0';const payload={mode,api_format:apiFormat,text:$('testText').value,instructions:$('instructions').value,model:$('testModel').value,reasoning_effort:$('testEffort').value,max_output_tokens:mode==='local_api'&&apiFormat==='responses'&&$('maxOutputTokens').value?Number($('maxOutputTokens').value):null,images,image_generation:$('imageGeneration').checked,image_quality:$('imageQuality').value,image_size:$('imageSize').value};try{if($('streamMode').checked)await streamRequest('/api/test/stream',payload,consumeStreamEvent);else{lastTest=await request('/api/test',{method:'POST',body:JSON.stringify(payload)});updateTestMetrics(lastTest);showResult('output')}notice(mode==='local_api'?'本地 API 链路测试成功。':'订阅直连测试成功。','success')}catch(e){lastTest={error:e.message};$('metricStatus').textContent='失败';$('metricDuration').textContent='-';$('metricRate').textContent='-';notice(e.message,'error');showResult('output')}finally{testRunning=false;syncTestMode()}}
 function renderOutput(box,result){box.replaceChildren();let items=result.render_items||[];if(!items.length){if(result.text)items=[{type:'text',text:result.text}];else if(result.streaming){box.textContent='等待模型返回...';return}else{box.textContent='模型没有返回可展示内容，可在“原始响应”中查看结构化输出。';return}}for(const [index,item] of items.entries()){if(item.type==='text'){const text=document.createElement('div');text.className='output-text';text.textContent=item.text;box.append(text)}else if(item.type==='image'&&item.data_url){const figure=document.createElement('figure');figure.className='generated-figure';const image=document.createElement('img');image.src=item.data_url;image.alt=`模型生成图片 ${index+1}`;const caption=document.createElement('figcaption');caption.className='generated-caption';const status=document.createElement('span');status.textContent=item.status==='partial'?'生成中':'生成完成';const download=document.createElement('a');download.href=item.data_url;download.download=`csub-generated-${index+1}.png`;download.textContent='下载图片';caption.append(status,download);figure.append(image,caption);box.append(figure)}}}
 function showResult(view){resultView=view;document.querySelectorAll('.tab').forEach(tab=>tab.classList.toggle('active',tab.dataset.view===view));const box=$('testResult');box.className=`result-view ${view==='output'?'output':''}`;if(!lastTest){box.textContent='运行测试后，结果会显示在这里。';box.classList.add('empty');return}if(lastTest.error){box.textContent=lastTest.error;return}if(view==='output')renderOutput(box,lastTest);else if(view==='response')box.textContent=JSON.stringify(lastTest.response,null,2);else box.textContent=JSON.stringify({mode:lastTest.mode,endpoint:lastTest.endpoint,body:lastTest.request},null,2)}
 async function copyValue(value,label){await navigator.clipboard.writeText(value);notice(`${label}已复制。`,'success')}

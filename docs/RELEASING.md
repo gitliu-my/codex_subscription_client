@@ -1,7 +1,7 @@
-# Releasing csub for macOS
+# Releasing csub for macOS and Linux
 
-The first distribution target is Apple Silicon macOS. A version tag builds the standalone
-runtime, publishes it to GitHub Releases, and updates `gitliu-my/homebrew-tap`.
+A version tag builds Apple Silicon macOS and Linux x86_64 standalone runtimes, publishes them
+to GitHub Releases, and updates the macOS Formula in `gitliu-my/homebrew-tap`.
 
 ## One-time setup
 
@@ -26,6 +26,14 @@ python3 -m unittest discover -s tests -v
 ./scripts/package_macos_release.sh
 ```
 
+Linux packaging is verified on an Ubuntu 22.04 x86_64 host or by the release workflow:
+
+```bash
+./scripts/build_linux.sh
+./scripts/package_linux_release.sh
+./scripts/install_linux.sh release/csub-linux-x86_64.tar.gz
+```
+
 After the release commit is on `main`, create and push the matching version tag:
 
 ```bash
@@ -37,9 +45,22 @@ git push origin v0.5.0
 The `Release` workflow then:
 
 1. verifies that the tag equals the package version;
-2. runs the test suite on a native arm64 macOS runner;
-3. uploads `csub-macos-arm64.tar.gz` and `SHA256SUMS`;
+2. runs the test suite and builds on native arm64 macOS and Ubuntu 22.04 x86_64 runners;
+3. uploads both platform archives and one combined `SHA256SUMS`;
 4. renders and pushes `Formula/csub.rb` to the existing Homebrew Tap.
+
+## Linux verification
+
+On a clean x86_64 Linux account without sudo access:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/gitliu-my/codex_subscription_client/main/scripts/install_linux.sh \
+  | sh
+export PATH="$HOME/.local/bin:$PATH"
+csub --help
+csub login
+```
 
 ## Homebrew verification
 

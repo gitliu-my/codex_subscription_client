@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from .api_keys import ApiKeyStore
-from .auth import CodexOAuth, CodexOAuthError
+from .auth import CodexOAuth, CodexOAuthError, is_headless_environment
 from .client import (
     CodexBackendError,
     CodexSubscriptionClient,
@@ -39,6 +39,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     login_parser.add_argument(
         "--no-browser", action="store_true", help="Print URL without opening it."
+    )
+    login_parser.add_argument(
+        "--manual",
+        action="store_true",
+        help="Paste the callback URL manually; automatic on headless Linux.",
     )
     login_parser.add_argument(
         "--timeout", type=int, default=600, help="OAuth callback timeout in seconds."
@@ -192,7 +197,18 @@ def main(argv: list[str] | None = None) -> int:
     auth = CodexOAuth()
     try:
         if args.command == "login":
-            auth.login(timeout_seconds=args.timeout, open_browser=not args.no_browser)
+            manual = args.manual or is_headless_environment()
+            if manual:
+                if is_headless_environment() and not args.manual:
+                    print("检测到无桌面 Linux，已使用手动回调授权模式。")
+                auth.login_manual(
+                    open_browser=not args.no_browser and not is_headless_environment()
+                )
+            else:
+                auth.login(
+                    timeout_seconds=args.timeout,
+                    open_browser=not args.no_browser,
+                )
             print(f"登录成功，token 已保存到：{auth.store.path}")
             return 0
 

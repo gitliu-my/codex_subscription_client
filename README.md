@@ -12,7 +12,7 @@ OpenAI-compatible API，并提供命令行工具与浏览器管理页面。
 > 使用前请自行确认账号、订阅和适用条款允许你的使用方式。不要共享 token、转售
 > 账号或用它绕过订阅限制。
 
-当前版本：`0.8.0`（alpha）。项目不依赖本机 Codex CLI，也不经过模型中间商。
+当前版本：`0.9.0`（alpha）。项目不依赖本机 Codex CLI，也不经过模型中间商。
 
 ## 功能
 
@@ -23,11 +23,11 @@ OpenAI-compatible API，并提供命令行工具与浏览器管理页面。
 - Python SDK。
 - 本地 `/v1/models`、`/v1/responses` 和 `/v1/chat/completions`。
 - 每个应用独立 API Key，可从 CLI 或本机管理页创建、查看、复制、重命名、
-  配置模型/推理档位白名单、禁用和删除；应用 Key 原始值保存在 macOS Keychain。
+  配置模型/推理档位白名单、禁用和删除；应用 Key 原始值保存在系统安全存储中。
 - 宽屏管理 UI：登录、模型选择、服务启停、图片输入，以及订阅直连/本地 API
   双路径测试。
 - 终端方向键配置向导，CLI 与浏览器管理页共用默认模型和推理档位。
-- macOS 独立终端程序，使用时不需要 Python 或虚拟环境。
+- macOS arm64 与 Linux x86_64 独立终端程序，使用时不需要 Python 或虚拟环境。
 
 ## 快速开始
 
@@ -51,6 +51,37 @@ csub restart
 ```
 
 发布维护流程见 [docs/RELEASING.md](docs/RELEASING.md)。
+
+### Linux x86_64 安装
+
+Ubuntu 等 x86_64 Linux 服务器可以安装到当前用户的 `~/.local`，不需要 sudo：
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/gitliu-my/codex_subscription_client/main/scripts/install_linux.sh \
+  | sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+无桌面服务器执行 `csub login` 时会自动使用手动回调模式。打开终端打印的授权地址，
+授权结束后即使浏览器显示无法访问 `localhost`，也只需复制地址栏中的完整地址并粘贴
+回终端，不需要在服务器开放 OAuth 端口：
+
+```bash
+csub login
+csub status
+csub models
+```
+
+从本机安全访问服务器上的管理页，可以建立 SSH 隧道：
+
+```bash
+ssh -L 8320:127.0.0.1:8320 user@server
+csub ui --no-browser
+```
+
+随后在本机浏览器打开 `http://127.0.0.1:8320`。API 端口同样可以使用
+`ssh -L 8317:127.0.0.1:8317 user@server` 转发。
 
 ### 从源码运行
 
@@ -145,11 +176,21 @@ csub keys permissions csub_live_ab12cd34 \
 当前配置的模型和推理档位；`create --unrestricted` 或
 `permissions KEY --unrestricted` 可显式开放全部权限。
 
-### macOS 独立 CLI
+### 独立 CLI 构建
+
+macOS arm64：
 
 ```bash
 ./scripts/build_macos.sh
 ./scripts/install_macos.sh
+```
+
+Linux x86_64：
+
+```bash
+./scripts/build_linux.sh
+./scripts/package_linux_release.sh
+./scripts/install_linux.sh release/csub-linux-x86_64.tar.gz
 ```
 
 安装后可使用：
@@ -170,7 +211,8 @@ csub ui
 管理页默认位于 `http://127.0.0.1:8320`。配置保存到
 `~/.codex_subscription/settings.json`，OAuth token 保存到
 `~/.codex_subscription/auth.json`，API Key 元数据保存到权限为 `0600` 的
-`~/.codex_subscription/api_keys.db`，应用 Key 原始值保存在 macOS Keychain。管理页将服务默认
+`~/.codex_subscription/api_keys.db`。应用 Key 原始值在 macOS 存入 Keychain，在 Linux
+存入权限为 `0600` 的 `~/.codex_subscription/secrets/`。管理页将服务默认
 配置、单次请求调试和应用 Key 权限分别放在 `API 控制台`、`API 调试台` 与 `API Keys` 三个
 视图中；侧栏显示当前 ChatGPT 姓名，悬停或点击可查看邮箱、订阅类型与 Account ID，
 不会显示 OAuth token。控制台中的接口地址由本机端口自动生成，只读并可直接复制。调试台支持文本与
@@ -246,11 +288,28 @@ API 默认最多同时向订阅后端发送 10 个请求，超过上限的请求
 `429`。可通过管理页或 `--max-concurrency` 调整。OAuth Token 过期时只会有一个请求
 执行刷新，其余并发请求复用刷新后的 Token。
 
-`/v1/responses` 会实时转发上游 SSE，并从最终事件返回 `usage`。除本地负责转换的
-`model`、`input`、`tools`、`instructions` 和 `stream` 外，其他 Responses 请求字段会
-继续传给订阅后端；透传不代表上游一定支持该参数，例如当前后端会拒绝
-`max_output_tokens`。本地客户端断开时，csub 会关闭对应的上游响应连接，但远端是否
-立即终止生成仍由订阅后端决定。
+`/v1/responses` 会实时转发上游 SSE，并从最终事件返回 `usage`。请求参数会先经过明确的
+Codex backend 方言转换，不再把未知字段直接透传：
+
+| 参数 | csub 行为 |
+| --- | --- |
+| `model`、`input`、`tools`、`instructions`、`stream` | 本地解析并构造 backend 请求。 |
+| `reasoning`（`effort`/`summary`/`context`/`mode`）、`tool_choice`、`parallel_tool_calls`、`text`（`format`/`verbosity`）、`include`、`service_tier`、`prompt_cache_key` | 校验后传给 backend；`reasoning`、`text` 和 `include` 会与 csub 必需值安全合并。 |
+| `store` | 仅接受 `false` 或 `null`；csub 始终使用 `store:false`，不提供持久化 Response 状态。 |
+| `max_output_tokens` | 为兼容 OpenAI SDK/DSH 接受并忽略；**不会限制或截断输出**。 |
+| `prompt_cache_retention`、`prompt_cache_options` | 接受并忽略；当前不会改变 backend 缓存策略。 |
+| `stream_options` | 接受并忽略；Responses 最终事件仍会保留 backend 返回的 `usage`。 |
+| `temperature`、`top_p`、`previous_response_id`、`conversation`、`background` 等未实现标准参数 | 在本地返回 `400 invalid_request_error`，避免伪装参数已经生效。 |
+| 未知参数 | 在本地返回 `400 invalid_request_error`。 |
+
+忽略兼容字段时，HTTP 响应头 `X-Csub-Ignored-Request-Fields` 会列出字段名，流式和
+非流式请求一致。真正由 Codex backend 或 OAuth 产生的故障仍返回 `502`。因此 DSH
+可以继续按标准 Responses 语义发送由 `maxTokens` 映射出的 `max_output_tokens`，但该值
+只是兼容提示，不是 csub 的强制 Token 配额。为了让配置更容易辨识，可把 DSH provider
+ID 命名为 `csub` 并显式设置 `api: openai-responses`；名称本身不影响协议行为。
+
+本地客户端断开时，csub 会关闭对应的上游响应连接，但远端是否立即终止生成仍由订阅
+后端决定。
 
 ## Python SDK
 
@@ -279,11 +338,13 @@ for model in client.list_models():
 | `CODEX_SUBSCRIPTION_MODEL` | 默认模型，当前默认 `gpt-5.6-luna`。 |
 | `CODEX_SUBSCRIPTION_REASONING_EFFORT` | 默认推理档，默认 `low`。 |
 | `CODEX_SUBSCRIPTION_TOKEN_FILE` | token 文件，默认 `~/.codex_subscription/auth.json`。 |
+| `CODEX_SUBSCRIPTION_SECRETS_DIR` | Linux 应用 Key 原始值目录，默认 `~/.codex_subscription/secrets`。 |
 | `CODEX_SUBSCRIPTION_TIMEOUT_SECONDS` | 模型请求超时，默认 180 秒。 |
 | `CODEX_SUBSCRIPTION_AUTO_LOGIN` | 设为 `0` 时禁止自动打开登录。 |
 | `CODEX_SUBSCRIPTION_OPEN_BROWSER` | 设为 `0` 时只打印授权地址。 |
 | `CODEX_SUBSCRIPTION_API_KEY` | `serve` 使用的本地 Bearer Key。 |
 | `CODEX_SUBSCRIPTION_ALLOWED_ORIGINS` | 额外允许的网页 CORS Origin。 |
+| `CODEX_SUBSCRIPTION_FORCE_IPV4` | 设为 `1` 时，出站请求仅使用 IPv4；用于绕过不可达的 IPv6 路由。 |
 
 命令行参数优先级最高，其次是环境变量，再其次是
 `~/.codex_subscription/settings.json` 中保存的默认值。
@@ -293,7 +354,8 @@ for model in client.list_models():
 - API 和管理页只允许监听 `127.0.0.1`/`localhost`；不要通过反向代理公开到网络。
 - API 始终要求随机或显式 Bearer Key，`/health` 仅返回最小健康状态。
 - 管理页使用随机会话 Cookie、同源检查和 CSRF 请求头，不返回账号 ID 或 token 路径。
-- 应用 Key 的原始值保存在 macOS Keychain；SQLite 只保存不可逆指纹和使用元数据。
+- 应用 Key 的原始值在 macOS 保存在 Keychain，在 Linux 保存在仅当前用户可读的独立
+  密钥文件中；SQLite 只保存不可逆指纹和使用元数据。
   OAuth token 和默认兼容 Key 仍受本机用户权限保护，不要提交、分享或粘贴到 Issue。
 - 应用 Key 的模型和推理档位白名单在请求进入订阅后端前校验；越权请求返回 `403`，
   `/v1/models` 只列出该 Key 可访问的模型。
@@ -306,7 +368,7 @@ for model in client.list_models():
 
 - OpenAI-compatible API 只实现常用子集，不是完整 OpenAI Platform API。
 - `stream=true` 会实时转发文本与工具参数增量；事件片段不保证恰好对应一个字符。
-- Responses 参数采用尽力透传，订阅后端不支持的官方参数仍会返回错误。
+- Responses 只实现上表列出的参数子集；不支持或未知参数会在本地明确返回 `400`。
 - 暂未提供 Anthropic `/v1/messages`，不能直接替代 CLIProxyAPI 驱动 Claude Code。
 - 暂未提供按 Key 的速率限制和 Token 配额，不能仅依靠它直接暴露公网服务。
 - 模型名称、可用推理档位和多模态能力由后端实时返回，不能保证长期不变。

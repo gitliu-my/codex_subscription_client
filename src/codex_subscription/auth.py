@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import secrets
+import sys
 import tempfile
 import threading
 import time
@@ -136,11 +137,13 @@ class CodexOAuth:
         config: CodexOAuthConfig | None = None,
         notifier: Callable[[str], None] | None = None,
         browser_opener: Callable[[str], object] | None = None,
+        manual_callback_reader: Callable[[str], str] | None = None,
     ) -> None:
         self.store = store or FileTokenStore()
         self.config = config or CodexOAuthConfig()
         self.notifier = notifier or print
         self.browser_opener = browser_opener or webbrowser.open
+        self.manual_callback_reader = manual_callback_reader or input
         self._refresh_lock = threading.RLock()
 
     def status(self) -> AuthStatus:
@@ -165,7 +168,29 @@ class CodexOAuth:
         with self._refresh_lock:
             return self._login(timeout_seconds, open_browser)
 
+    def login_manual(self, open_browser: bool = True) -> OAuthTokens:
+        """Complete OAuth by pasting the browser callback URL into the terminal."""
+
+        with self._refresh_lock:
+            verifier, challenge = create_pkce_pair()
+            state = secrets.token_hex(16)
+            authorization_url = self.build_authorization_url(challenge, state)
+            self.notifier("请在浏览器中完成 ChatGPT/Codex 授权：")
+            self.notifier(authorization_url)
+            if open_browser:
+                self.browser_opener(authorization_url)
+            callback_url = self.manual_callback_reader(
+                "授权后浏览器可能显示无法访问 localhost；"
+                "请复制地址栏中的完整地址并粘贴到这里：\n> "
+            )
+            code = self._parse_manual_callback(callback_url, state)
+            return self._exchange_authorization_code(code, verifier)
+
     def _login(self, timeout_seconds: int, open_browser: bool) -> OAuthTokens:
+        if open_browser and is_headless_environment():
+            raise CodexOAuthError(
+                "当前是无桌面环境，请先运行 csub login --manual 完成授权。"
+            )
         verifier, challenge = create_pkce_pair()
         state = secrets.token_hex(16)
         authorization_url = self.build_authorization_url(challenge, state)
@@ -186,6 +211,11 @@ class CodexOAuth:
         finally:
             callback.close()
 
+        return self._exchange_authorization_code(code, verifier)
+
+    def _exchange_authorization_code(
+        self, code: str, verifier: str
+    ) -> OAuthTokens:
         tokens = self._request_tokens(
             {
                 "grant_type": "authorization_code",
@@ -197,6 +227,31 @@ class CodexOAuth:
         )
         self.store.save(tokens)
         return tokens
+
+    def _parse_manual_callback(self, value: str, expected_state: str) -> str:
+        parsed = urllib.parse.urlparse(str(value or "").strip())
+        expected = urllib.parse.urlparse(self.config.redirect_uri)
+        try:
+            origin_matches = (
+                parsed.scheme == expected.scheme
+                and parsed.hostname == expected.hostname
+                and parsed.port == expected.port
+            )
+        except ValueError as exc:
+            raise CodexOAuthError("粘贴的 OAuth 回调地址无效。") from exc
+        if not origin_matches or parsed.path != expected.path:
+            raise CodexOAuthError("粘贴的 OAuth 回调地址无效。")
+        params = urllib.parse.parse_qs(parsed.query)
+        state = _first(params.get("state"))
+        code = _first(params.get("code"))
+        error = _first(params.get("error"))
+        if state != expected_state:
+            raise CodexOAuthError("OAuth state 不匹配，已拒绝回调。")
+        if error:
+            raise CodexOAuthError(error)
+        if not code:
+            raise CodexOAuthError("OAuth 回调缺少 code。")
+        return code
 
     def get_access_token(self, allow_login: bool = True) -> str:
         tokens = self.store.load()
@@ -220,9 +275,12 @@ class CodexOAuth:
                 raise CodexOAuthError(
                     "没有可用的 Codex OAuth 登录态，请先执行网页登录。"
                 )
-            return self._login(
-                600, _env_bool("CODEX_SUBSCRIPTION_OPEN_BROWSER", True)
-            ).access_token
+            open_browser = _env_bool("CODEX_SUBSCRIPTION_OPEN_BROWSER", True)
+            if open_browser and is_headless_environment():
+                raise CodexOAuthError(
+                    "当前是无桌面环境，请先运行 csub login --manual 完成授权。"
+                )
+            return self._login(600, open_browser).access_token
 
     def refresh(self, refresh_token: str | None = None) -> OAuthTokens:
         with self._refresh_lock:
@@ -385,6 +443,12 @@ def default_token_path() -> Path:
     if configured:
         return Path(configured)
     return Path.home() / ".codex_subscription" / "auth.json"
+
+
+def is_headless_environment() -> bool:
+    return sys.platform.startswith("linux") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    )
 
 
 def create_pkce_pair() -> tuple[str, str]:

@@ -13,6 +13,7 @@ from codex_subscription.client import (
     image_to_url,
     parse_response_sse,
 )
+from codex_subscription.responses_compat import ResponsesCompatibilityError
 
 
 TOKEN_PAYLOAD = "eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xMjMifX0"
@@ -169,6 +170,12 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(payload["tools"], [])
         self.assertEqual(payload["tool_choice"], "auto")
         self.assertFalse(payload["parallel_tool_calls"])
+
+    def test_payload_rejects_untranslated_options_that_could_override_invariants(self) -> None:
+        client = CodexSubscriptionClient(allow_login=False)
+
+        with self.assertRaisesRegex(ResponsesCompatibilityError, "Unsafe.*model"):
+            client._build_payload([], None, None, {"model": "other-model"})
 
     def test_profile_and_models_are_self_contained(self) -> None:
         client = CodexSubscriptionClient(auth=FakeAuth(), allow_login=False)  # type: ignore[arg-type]

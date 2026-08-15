@@ -15,6 +15,11 @@ from typing import Any, Callable, Iterator
 from .api_keys import ApiKeyRecord, ApiKeyStore
 from .auth import CodexOAuthError
 from .client import CodexBackendError, CodexResponse, CodexSubscriptionClient
+from .responses_compat import (
+    ResponsesCompatibilityError,
+    ignored_fields_header,
+    translate_responses_options,
+)
 from .settings import DEFAULT_MAX_CONCURRENCY
 
 
@@ -76,25 +81,20 @@ class SubscriptionApi:
         dict[str, Any],
     ]:
         model = _optional_string(body.get("model")) or self.client.model
-        reasoning = body.get("reasoning")
+        compatibility = translate_responses_options(body)
+        reasoning = compatibility.backend_options.get("reasoning")
         effort = self.client.reasoning_effort
         if isinstance(reasoning, dict):
             effort = _optional_string(reasoning.get("effort")) or effort
 
         client = self._request_client(model, effort)
-        extra_body = {
-            key: value
-            for key, value in body.items()
-            if key
-            not in {"model", "input", "tools", "instructions", "stream"}
-        }
         return (
             model,
             client,
             _normalize_responses_input(body.get("input")),
             _normalize_responses_tools(body.get("tools")),
             _optional_string(body.get("instructions")),
-            extra_body,
+            compatibility.backend_options,
         )
 
     def chat_completions(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -254,10 +254,26 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
         if self.path == "/v1/responses":
             if not self._policy_authorized(body, responses_api=True):
                 return
+            try:
+                compatibility = translate_responses_options(body)
+            except ResponsesCompatibilityError as exc:
+                self._error(400, str(exc))
+                return
+            ignored = ignored_fields_header(compatibility.ignored_fields)
+            response_headers = (
+                {"X-Csub-Ignored-Request-Fields": ignored} if ignored else None
+            )
             if body.get("stream") is True:
-                self._stream(self.server.api.responses_stream, body)
+                self._stream(
+                    self.server.api.responses_stream,
+                    body,
+                    response_headers=response_headers,
+                )
             else:
-                self._call(lambda: self.server.api.responses(body))
+                self._call(
+                    lambda: self.server.api.responses(body),
+                    response_headers=response_headers,
+                )
             return
         if self.path == "/v1/chat/completions":
             if not self._policy_authorized(body, responses_api=False):
@@ -272,6 +288,7 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
     def _call(
         self,
         operation: Any,
+        response_headers: dict[str, str] | None = None,
     ) -> None:
         if not self._acquire_request_slot():
             return
@@ -282,7 +299,7 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
             self._error(502 if upstream_error else 400, str(exc))
             return
         else:
-            self._json(200, result)
+            self._json(200, result, response_headers=response_headers)
         finally:
             self.server.request_slots.release()
 
@@ -290,6 +307,7 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
         self,
         operation: Callable[[dict[str, Any]], Iterator[dict[str, Any]]],
         body: dict[str, Any] | None = None,
+        response_headers: dict[str, str] | None = None,
     ) -> None:
         if not self._acquire_request_slot():
             return
@@ -302,6 +320,8 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("X-Accel-Buffering", "no")
+            for name, value in (response_headers or {}).items():
+                self.send_header(name, value)
             self._cors_headers()
             self.end_headers()
             started = True
@@ -415,12 +435,19 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
             raise ValueError("Request body must be a JSON object")
         return value
 
-    def _json(self, status: int, body: dict[str, Any]) -> None:
+    def _json(
+        self,
+        status: int,
+        body: dict[str, Any],
+        response_headers: dict[str, str] | None = None,
+    ) -> None:
         encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        for name, value in (response_headers or {}).items():
+            self.send_header(name, value)
         self._cors_headers()
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
@@ -432,7 +459,11 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
             {
                 "error": {
                     "message": message,
-                    "type": "codex_subscription_error",
+                    "type": (
+                        "invalid_request_error"
+                        if status == 400
+                        else "codex_subscription_error"
+                    ),
                     "code": None,
                 }
             },
@@ -448,6 +479,9 @@ class SubscriptionApiHandler(BaseHTTPRequestHandler):
             self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header(
+            "Access-Control-Expose-Headers", "X-Csub-Ignored-Request-Fields"
+        )
 
     def _allowed_cors_origin(self) -> str | None:
         origin = self.headers.get("Origin")

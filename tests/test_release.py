@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,16 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class ReleaseToolingTests(unittest.TestCase):
+    def test_linux_release_scripts_are_executable_and_valid_shell(self) -> None:
+        for name in (
+            "build_linux.sh",
+            "package_linux_release.sh",
+            "install_linux.sh",
+        ):
+            path = ROOT / "scripts" / name
+            self.assertTrue(os.access(path, os.X_OK), name)
+            subprocess.run(["sh", "-n", str(path)], check=True)
+
     def test_homebrew_formula_renderer_replaces_release_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "Formula" / "csub.rb"

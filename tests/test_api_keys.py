@@ -5,11 +5,51 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from codex_subscription.api_keys import ApiKeyStore, MemorySecretStore
+from codex_subscription.api_keys import (
+    ApiKeyStore,
+    FileSecretStore,
+    MemorySecretStore,
+    default_secret_store,
+)
 
 
 class ApiKeyStoreTests(unittest.TestCase):
+    def test_file_secret_store_round_trip_permissions_and_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "secrets"
+            secrets = FileSecretStore(root)
+            secrets.put("account-123", "secret-value")
+            secret_path = root / "account-123"
+
+            self.assertEqual(secrets.get("account-123"), "secret-value")
+            self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(secret_path.stat().st_mode & 0o777, 0o600)
+            secrets.delete("account-123")
+            self.assertFalse(secret_path.exists())
+
+    def test_file_secret_store_rejects_path_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            secrets = FileSecretStore(Path(directory) / "secrets")
+            with self.assertRaisesRegex(ValueError, "账户标识无效"):
+                secrets.put("../outside", "secret-value")
+
+    def test_linux_uses_file_secret_store_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch(
+                    "codex_subscription.api_keys.sys.platform", "linux"
+                ),
+                patch(
+                    "codex_subscription.api_keys.DEFAULT_FILE_SECRETS_PATH",
+                    Path(directory) / "secrets",
+                ),
+            ):
+                secrets = default_secret_store()
+                self.assertIsInstance(secrets, FileSecretStore)
+                self.assertEqual(secrets.path, Path(directory) / "secrets")
+
     def test_create_reveal_authenticate_and_disable_without_plaintext_db(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "api_keys.db"

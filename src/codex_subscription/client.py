@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence, TypeVar
 
 from .auth import CodexOAuth, CodexOAuthError, extract_chatgpt_account_id
+from .responses_compat import apply_backend_options
 from .transport import urlopen
 
 
@@ -308,9 +309,7 @@ class CodexSubscriptionClient:
             "text": {"verbosity": "medium"},
             "include": ["reasoning.encrypted_content"],
         }
-        if extra_body:
-            payload.update(extra_body)
-        return payload
+        return apply_backend_options(payload, extra_body)
 
 
 class _UnauthorizedError(RuntimeError):

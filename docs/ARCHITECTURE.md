@@ -16,13 +16,15 @@ CLI / browser dashboard / Python caller
 
 ## Modules
 
-- `auth.py`: PKCE login, callback listener, token persistence, single-flight refresh, and
-  status.
-- `api_keys.py`: application-key metadata in SQLite, recoverable secrets in macOS Keychain,
-  legacy-key migration, model/reasoning permission policies, lifecycle operations, and live
-  request authentication.
+- `auth.py`: PKCE login, callback listener, headless manual callback handling, token
+  persistence, single-flight refresh, and status.
+- `api_keys.py`: application-key metadata in SQLite, recoverable secrets in macOS Keychain or
+  Linux user-only files, legacy-key migration, model/reasoning permission policies, lifecycle
+  operations, and live request authentication.
 - `client.py`: Codex client profile, model discovery, multimodal request conversion, retry,
   incremental SSE iteration, response aggregation, and usage parsing.
+- `responses_compat.py`: explicit public Responses capability policy, Codex backend option
+  translation, ignored compatibility hints, validation, and invariant-preserving payload merges.
 - `transport.py`: shared HTTPS opener with a packaged CA bundle and `SSL_CERT_FILE` override.
 - `server.py`: local OpenAI-compatible HTTP facade, live Responses/Chat SSE forwarding,
   per-key model/reasoning authorization, bounded upstream concurrency, and browser-extension
@@ -49,10 +51,16 @@ mode.
 Service-control routes continue to require the private compatibility/control key. Model routes
 authenticate against the shared SQLite key registry, so creating, disabling, or deleting an
 application key in the dashboard takes effect without restarting the API process. The registry
-stores only SHA-256 fingerprints and metadata; full application secrets are retrieved from
-macOS Keychain only for explicit local reveal operations.
+stores only SHA-256 fingerprints and metadata; full application secrets are retrieved from the
+platform store only for explicit local reveal operations.
 
 For streaming requests, the handler keeps one upstream HTTPS response open and flushes every SSE
 event to the loopback client. Closing the downstream iterator closes that upstream response. The
 same bounded semaphore covers streaming, non-streaming, and model-list requests so a long-running
 stream retains its slot until completion or cancellation.
+
+Responses request handling has four explicit classes: locally consumed envelope fields, supported
+backend controls, safe compatibility hints that are ignored and reported in a response header, and
+unsupported/unknown fields rejected with a local `400`. Only translated backend controls reach
+`client.py`; its merge routine cannot replace model, instructions, input, tools, `store:false`, or
+`stream:true`. Upstream authentication and backend failures remain `502` responses.

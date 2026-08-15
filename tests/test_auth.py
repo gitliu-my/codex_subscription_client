@@ -7,7 +7,8 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlparse
 
 from codex_subscription.auth import (
     CodexOAuth,
@@ -102,6 +103,65 @@ class AuthTests(unittest.TestCase):
 
         self.assertEqual(results, ["new"] * 5)
         request_tokens.assert_called_once()
+
+    def test_manual_login_accepts_pasted_callback_url(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            notices: list[str] = []
+            store = FileTokenStore(Path(directory) / "auth.json")
+            tokens = OAuthTokens("access", "refresh", int(time.time()) + 3600)
+
+            def callback_reader(prompt: str) -> str:
+                self.assertIn("完整地址", prompt)
+                state = parse_qs(urlparse(notices[-1]).query)["state"][0]
+                return (
+                    "http://localhost:1455/auth/callback"
+                    f"?code=manual-code&state={state}"
+                )
+
+            auth = CodexOAuth(
+                store=store,
+                notifier=notices.append,
+                browser_opener=Mock(),
+                manual_callback_reader=callback_reader,
+            )
+            with patch.object(
+                auth, "_request_tokens", return_value=tokens
+            ) as request_tokens:
+                result = auth.login_manual(open_browser=False)
+
+            self.assertEqual(result, tokens)
+            self.assertEqual(store.load(), tokens)
+            self.assertEqual(
+                request_tokens.call_args.args[0]["code"], "manual-code"
+            )
+
+    def test_manual_login_rejects_state_mismatch(self) -> None:
+        auth = CodexOAuth()
+        with self.assertRaisesRegex(Exception, "state 不匹配"):
+            auth._parse_manual_callback(
+                "http://localhost:1455/auth/callback?code=x&state=wrong",
+                "expected",
+            )
+
+    def test_manual_login_rejects_non_local_callback(self) -> None:
+        auth = CodexOAuth()
+        with self.assertRaisesRegex(Exception, "回调地址无效"):
+            auth._parse_manual_callback(
+                "https://example.com/auth/callback?code=x&state=expected",
+                "expected",
+            )
+
+    @patch("codex_subscription.auth.is_headless_environment", return_value=True)
+    def test_automatic_login_requires_manual_mode_when_headless(
+        self, headless: Mock
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            auth = CodexOAuth(
+                store=FileTokenStore(Path(directory) / "auth.json")
+            )
+            with self.assertRaisesRegex(Exception, "login --manual"):
+                auth.get_access_token()
+
 
 
 if __name__ == "__main__":

@@ -2,6 +2,23 @@
 
 All notable changes are documented here.
 
+## Unreleased
+
+## 0.9.0 - 2026-08-15
+
+- Add Linux x86_64 standalone builds and a no-sudo installer for `~/.local`.
+- Store recoverable application API keys in permission-restricted files on Linux while
+  preserving macOS Keychain storage on macOS.
+- Add automatic manual OAuth callback handling for headless SSH sessions.
+- Add an optional IPv4-only transport mode for hosts with unusable IPv6 routes.
+- Add an explicit Responses-to-Codex dialect layer instead of blindly forwarding request fields.
+- Accept DSH/OpenAI SDK `max_output_tokens` requests without forwarding the unsupported field,
+  expose ignored compatibility hints in an HTTP response header, and keep the limitation honest.
+- Pass supported reasoning, tool, text, include, service-tier, and prompt-cache-key controls while
+  protecting model/input/storage/streaming invariants; reject unsafe or unknown fields locally.
+- Add a Responses max-output-token control to the local API debugger and cover DSH-like streaming
+  and non-streaming requests through a fake backend.
+
 ## 0.8.0 - 2026-08-05
 
 - Increase the default maximum upstream concurrency from 3 to 10.

@@ -20,6 +20,7 @@ remain bound to loopback. Exposing either service through a reverse proxy, publi
 container port mapping, or LAN bind is outside the supported threat model.
 
 OAuth tokens, application API keys, and the compatibility/control key are sensitive credentials.
-Application-key secrets are stored in macOS Keychain while metadata uses a user-only SQLite
-database. The compatibility key and OAuth tokens remain in user-only files. Anyone who can run
-code as the same operating-system user should still be considered able to use the subscription.
+Application-key secrets are stored in macOS Keychain or Linux user-only secret files while
+metadata uses a user-only SQLite database. The compatibility key and OAuth tokens remain in
+user-only files. Anyone who can run code as the same operating-system user should still be
+considered able to use the subscription.

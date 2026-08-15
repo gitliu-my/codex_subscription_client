@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from codex_subscription.api_keys import ApiKeyStore, MemorySecretStore
 from codex_subscription.client import (
+    CodexBackendError,
     CodexResponse,
     CodexSubscriptionClient,
     SubscriptionModel,
@@ -339,7 +340,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(response["output"][0]["type"], "image_generation_call")
         self.assertEqual(response["output"][0]["result"], "aW1hZ2U=")
 
-    def test_responses_parameters_are_forwarded_to_upstream(self) -> None:
+    def test_responses_parameters_are_translated_for_upstream(self) -> None:
         api = SubscriptionApi(CodexSubscriptionClient(allow_login=False))
         with patch.object(
             CodexSubscriptionClient,
@@ -359,11 +360,276 @@ class ServerTests(unittest.TestCase):
             )
 
         extra = create_response.call_args.kwargs["extra_body"]
-        self.assertEqual(extra["max_output_tokens"], 200)
+        self.assertNotIn("max_output_tokens", extra)
         self.assertEqual(extra["tool_choice"], "required")
         self.assertFalse(extra["parallel_tool_calls"])
         self.assertEqual(extra["reasoning"]["summary"], "detailed")
         self.assertNotIn("stream", extra)
+
+    def test_dsh_like_responses_request_succeeds_through_fake_backend(self) -> None:
+        captured_payloads: list[dict[str, object]] = []
+        output = [
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "checked"}],
+            },
+            {
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "lookup",
+                "arguments": '{"query":"csub"}',
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "OK",
+                        "annotations": [
+                            {
+                                "type": "url_citation",
+                                "url": "https://example.com/source",
+                                "title": "Source",
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "type": "image_generation_call",
+                "id": "image-1",
+                "result": "aW1hZ2U=",
+            },
+        ]
+
+        def fake_backend(client, payload):
+            captured_payloads.append(payload)
+            yield {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-dsh",
+                    "model": "gpt-test",
+                    "output": output,
+                    "usage": {
+                        "input_tokens": 12,
+                        "output_tokens": 4,
+                        "total_tokens": 16,
+                    },
+                },
+            }
+
+        server = SubscriptionApiServer(
+            ("127.0.0.1", 0),
+            CodexSubscriptionClient(allow_login=False),
+            api_key="d" * 32,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            body = {
+                "model": "gpt-test",
+                "input": "hello",
+                "instructions": "answer briefly",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "lookup",
+                        "parameters": {"type": "object"},
+                    }
+                ],
+                "tool_choice": "auto",
+                "parallel_tool_calls": False,
+                "reasoning": {"effort": "medium", "summary": "detailed"},
+                "text": {"verbosity": "low"},
+                "include": ["file_search_call.results"],
+                "store": False,
+                "service_tier": "auto",
+                "prompt_cache_key": "dsh-session-1",
+                "prompt_cache_retention": "24h",
+                "prompt_cache_options": {"mode": "explicit"},
+                "max_output_tokens": 32_000,
+            }
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}/v1/responses",
+                data=json.dumps(body).encode(),
+                headers={
+                    "Authorization": "Bearer " + "d" * 32,
+                    "Content-Type": "application/json",
+                },
+            )
+            with patch.object(
+                CodexSubscriptionClient, "_stream_authenticated", fake_backend
+            ):
+                with urllib.request.urlopen(request) as response:
+                    result = json.load(response)
+                    ignored = response.headers["X-Csub-Ignored-Request-Fields"]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertIn("max_output_tokens", ignored)
+        self.assertIn("prompt_cache_options", ignored)
+        self.assertIn("prompt_cache_retention", ignored)
+        self.assertEqual(result["id"], "resp-dsh")
+        self.assertEqual(result["usage"]["total_tokens"], 16)
+        self.assertEqual(result["output"][0]["type"], "reasoning")
+        self.assertEqual(result["output"][1]["type"], "function_call")
+        self.assertEqual(
+            result["output"][2]["content"][0]["annotations"][0]["type"],
+            "url_citation",
+        )
+        self.assertEqual(result["output"][3]["type"], "image_generation_call")
+        payload = captured_payloads[0]
+        self.assertNotIn("max_output_tokens", payload)
+        self.assertNotIn("prompt_cache_retention", payload)
+        self.assertNotIn("prompt_cache_options", payload)
+        self.assertEqual(payload["prompt_cache_key"], "dsh-session-1")
+        self.assertEqual(payload["service_tier"], "auto")
+        self.assertEqual(payload["reasoning"]["summary"], "detailed")
+        self.assertEqual(payload["text"]["verbosity"], "low")
+        self.assertEqual(
+            payload["include"],
+            ["file_search_call.results", "reasoning.encrypted_content"],
+        )
+        self.assertFalse(payload["store"])
+        self.assertTrue(payload["stream"])
+
+    def test_dsh_like_stream_request_ignores_max_output_tokens(self) -> None:
+        captured_payloads: list[dict[str, object]] = []
+
+        def fake_backend(client, payload):
+            captured_payloads.append(payload)
+            yield {"type": "response.created", "response": {"id": "resp-stream"}}
+            yield {"type": "response.output_text.delta", "delta": "OK"}
+            yield {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-stream",
+                    "output": [],
+                    "usage": {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+                },
+            }
+
+        server = SubscriptionApiServer(
+            ("127.0.0.1", 0),
+            CodexSubscriptionClient(allow_login=False),
+            api_key="s" * 32,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}/v1/responses",
+                data=json.dumps(
+                    {
+                        "model": "gpt-test",
+                        "input": "hello",
+                        "stream": True,
+                        "max_output_tokens": 128_000,
+                        "prompt_cache_key": "dsh-stream",
+                    }
+                ).encode(),
+                headers={
+                    "Authorization": "Bearer " + "s" * 32,
+                    "Content-Type": "application/json",
+                },
+            )
+            with patch.object(
+                CodexSubscriptionClient, "_stream_authenticated", fake_backend
+            ):
+                with urllib.request.urlopen(request) as response:
+                    ignored = response.headers["X-Csub-Ignored-Request-Fields"]
+                    streamed = response.read().decode()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual(ignored, "max_output_tokens")
+        self.assertIn("response.output_text.delta", streamed)
+        self.assertIn("[DONE]", streamed)
+        self.assertNotIn("max_output_tokens", captured_payloads[0])
+        self.assertEqual(captured_payloads[0]["prompt_cache_key"], "dsh-stream")
+
+    def test_unknown_responses_field_returns_local_400_without_backend_call(self) -> None:
+        backend_called = False
+
+        def fake_backend(client, payload):
+            nonlocal backend_called
+            backend_called = True
+            yield {"type": "response.completed", "response": {"output": []}}
+
+        server = SubscriptionApiServer(
+            ("127.0.0.1", 0),
+            CodexSubscriptionClient(allow_login=False),
+            api_key="u" * 32,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}/v1/responses",
+                data=b'{"input":"hello","unknown_option":true}',
+                headers={
+                    "Authorization": "Bearer " + "u" * 32,
+                    "Content-Type": "application/json",
+                },
+            )
+            with patch.object(
+                CodexSubscriptionClient, "_stream_authenticated", fake_backend
+            ):
+                with self.assertRaises(urllib.error.HTTPError) as context:
+                    urllib.request.urlopen(request)
+                error = json.loads(context.exception.read())
+                context.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual(context.exception.code, 400)
+        self.assertEqual(error["error"]["type"], "invalid_request_error")
+        self.assertIn("unknown_option", error["error"]["message"])
+        self.assertFalse(backend_called)
+
+    def test_real_backend_failure_remains_502(self) -> None:
+        def failing_backend(client, payload):
+            raise CodexBackendError("backend unavailable")
+            yield
+
+        server = SubscriptionApiServer(
+            ("127.0.0.1", 0),
+            CodexSubscriptionClient(allow_login=False),
+            api_key="f" * 32,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}/v1/responses",
+                data=b'{"input":"hello"}',
+                headers={
+                    "Authorization": "Bearer " + "f" * 32,
+                    "Content-Type": "application/json",
+                },
+            )
+            with patch.object(
+                CodexSubscriptionClient, "_stream_authenticated", failing_backend
+            ):
+                with self.assertRaises(urllib.error.HTTPError) as context:
+                    urllib.request.urlopen(request)
+                error = json.loads(context.exception.read())
+                context.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual(context.exception.code, 502)
+        self.assertEqual(error["error"]["type"], "codex_subscription_error")
+        self.assertIn("backend unavailable", error["error"]["message"])
 
     def test_chat_stream_converts_text_deltas_and_usage(self) -> None:
         upstream = iter(

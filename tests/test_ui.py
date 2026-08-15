@@ -50,6 +50,7 @@ class DashboardControllerTests(unittest.TestCase):
         self.assertIn('id="testMode"', DASHBOARD_HTML)
         self.assertIn('id="testModel"', DASHBOARD_HTML)
         self.assertIn('id="testEffort"', DASHBOARD_HTML)
+        self.assertIn('id="maxOutputTokens"', DASHBOARD_HTML)
         self.assertIn('value="local_api"', DASHBOARD_HTML)
         self.assertIn('id="imageInput"', DASHBOARD_HTML)
         self.assertIn('value="responses"', DASHBOARD_HTML)
@@ -680,6 +681,7 @@ class DashboardControllerTests(unittest.TestCase):
                             "text": "测试 Responses API",
                             "model": "gpt-test",
                             "reasoning_effort": "low",
+                            "max_output_tokens": 32_000,
                         }
                     )
             finally:
@@ -695,6 +697,7 @@ class DashboardControllerTests(unittest.TestCase):
         self.assertEqual(responses_result["text"], "API 链路成功")
         self.assertIn("/v1/responses", responses_result["endpoint"])
         self.assertEqual(responses_result["response"]["object"], "response")
+        self.assertEqual(responses_result["request"]["max_output_tokens"], 32_000)
 
     def test_local_api_stream_uses_real_sse_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -746,6 +749,7 @@ class DashboardControllerTests(unittest.TestCase):
                                 "text": "测试本地流式",
                                 "model": "gpt-test",
                                 "reasoning_effort": "low",
+                                "max_output_tokens": 128_000,
                             }
                         )
                     )
@@ -758,6 +762,7 @@ class DashboardControllerTests(unittest.TestCase):
         self.assertEqual(result["text"], "API 流式")
         self.assertEqual(result["usage"]["total_tokens"], 11)
         self.assertTrue(result["request"]["stream"])
+        self.assertEqual(result["request"]["max_output_tokens"], 128_000)
         self.assertIn("/v1/responses", result["endpoint"])
 
 

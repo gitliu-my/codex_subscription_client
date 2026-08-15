@@ -66,6 +66,23 @@ class CliConfigurationTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("usage: csub", output.getvalue())
 
+    @patch("codex_subscription.cli.CodexOAuth")
+    @patch("codex_subscription.cli.is_headless_environment", return_value=True)
+    def test_login_uses_manual_callback_on_headless_linux(
+        self, headless: MagicMock, auth_class: MagicMock
+    ) -> None:
+        auth = auth_class.return_value
+        auth.store.path = Path("/tmp/auth.json")
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            result = main(["login"])
+
+        self.assertEqual(result, 0)
+        auth.login_manual.assert_called_once_with(open_browser=False)
+        auth.login.assert_not_called()
+        self.assertIn("无桌面 Linux", output.getvalue())
+
     def test_keys_command_creates_lists_and_reveals_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             keys = ApiKeyStore(
