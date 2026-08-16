@@ -107,6 +107,20 @@ class DashboardControllerTests(unittest.TestCase):
         self.assertIn("function showAppView", DASHBOARD_HTML)
 
     @patch("codex_subscription.ui.start_api_service")
+    def test_dashboard_rejects_api_start_without_login(
+        self, start_service: MagicMock
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = DashboardController(Path(directory) / "settings.json")
+            controller.auth = MagicMock()
+            controller.auth.status.return_value.logged_in = False
+
+            with self.assertRaisesRegex(ValueError, "尚未登录"):
+                controller.start_api(controller.config)
+
+        start_service.assert_not_called()
+
+    @patch("codex_subscription.ui.start_api_service")
     @patch("codex_subscription.ui.stop_api_service")
     @patch("codex_subscription.ui.probe_api")
     def test_configuring_running_api_restarts_with_new_settings(

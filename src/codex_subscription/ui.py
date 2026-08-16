@@ -94,6 +94,8 @@ class DashboardController:
         ]
 
     def start_api(self, value: dict[str, Any]) -> dict[str, Any]:
+        if not self.auth.status().logged_in:
+            raise ValueError("尚未登录，请先完成 ChatGPT 授权。")
         config = self._validated_config(value)
         self.config = config
         self._save_settings()

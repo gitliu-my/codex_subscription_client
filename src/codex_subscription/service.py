@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import plistlib
 import subprocess
 import sys
 import time
@@ -14,11 +15,23 @@ from typing import Any
 
 
 DEFAULT_LOG_PATH = Path.home() / ".codex_subscription" / "api.log"
+MACOS_LAUNCH_AGENT_LABEL = "com.gitliu-my.csub-api"
+MACOS_LAUNCH_AGENT_PATH = (
+    Path.home() / "Library" / "LaunchAgents" / f"{MACOS_LAUNCH_AGENT_LABEL}.plist"
+)
 
 
 @dataclass(frozen=True)
 class ApiServiceStatus:
     state: str
+    pid: int | None = None
+
+
+@dataclass(frozen=True)
+class _MacOSLaunchAgent:
+    path: Path
+    label: str
+    loaded: bool
     pid: int | None = None
 
 
@@ -65,37 +78,60 @@ def start_api_service(
         return False, current
     _raise_unstartable(current, config)
 
-    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(log_path.parent, 0o700)
-    with log_path.open("ab") as log:
-        os.chmod(log_path, 0o600)
-        process = subprocess.Popen(
-            _serve_command(),
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            close_fds=True,
-            env={**os.environ, "CSUB_BACKGROUND": "1"},
-        )
+    launch_agent = _detect_macos_launch_agent()
+    process: subprocess.Popen[bytes] | None = None
+    if launch_agent is not None:
+        if launch_agent.loaded:
+            raise ValueError(
+                "csub 的 macOS 后台守护任务已加载，但 API 未就绪；"
+                f"请查看日志：{log_path}"
+            )
+        _bootstrap_macos_launch_agent(launch_agent)
+    else:
+        log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(log_path.parent, 0o700)
+        with log_path.open("ab") as log:
+            os.chmod(log_path, 0o600)
+            process = subprocess.Popen(
+                _serve_command(),
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=True,
+                env={**os.environ, "CSUB_BACKGROUND": "1"},
+            )
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         status = probe_api(config)
         if status.state == "running":
             return True, status
-        if process.poll() is not None:
+        if process is not None and process.poll() is not None:
             raise ValueError(f"后台 API 启动失败，请查看日志：{log_path}")
         time.sleep(0.1)
 
-    process.terminate()
+    if launch_agent is not None:
+        loaded_agent = _detect_macos_launch_agent()
+        if loaded_agent is not None and loaded_agent.loaded:
+            _bootout_macos_launch_agent(loaded_agent)
+    elif process is not None:
+        process.terminate()
     raise ValueError(f"后台 API 启动超时，请查看日志：{log_path}")
 
 
 def stop_api_service(
-    config: dict[str, Any], timeout: float = 5
+    config: dict[str, Any], timeout: float = 5, settle_time: float = 0.25
 ) -> tuple[bool, ApiServiceStatus]:
     current = probe_api(config)
+    launch_agent = _detect_macos_launch_agent()
+    if launch_agent is not None and launch_agent.loaded:
+        _bootout_macos_launch_agent(launch_agent)
+        status = _wait_until_stopped(config, timeout, settle_time)
+        if status.state == "stopped":
+            return True, status
+        current = status
+
     if current.state == "stopped":
         return False, current
     if current.state == "key_mismatch":
@@ -122,12 +158,9 @@ def stop_api_service(
     finally:
         connection.close()
 
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        status = probe_api(config)
-        if status.state == "stopped":
-            return True, status
-        time.sleep(0.05)
+    status = _wait_until_stopped(config, timeout, settle_time)
+    if status.state == "stopped":
+        return True, status
     raise ValueError("API 已收到停止请求，但未在预期时间内退出。")
 
 
@@ -143,6 +176,112 @@ def _serve_command() -> list[str]:
     if installed.is_file() and os.access(installed, os.X_OK):
         return [str(installed), "serve", "--no-login"]
     return [sys.executable, "-m", "codex_subscription", "serve", "--no-login"]
+
+
+def _wait_until_stopped(
+    config: dict[str, Any], timeout: float, settle_time: float
+) -> ApiServiceStatus:
+    deadline = time.monotonic() + timeout
+    stopped_since: float | None = None
+    last = probe_api(config)
+    while time.monotonic() < deadline:
+        if last.state == "stopped":
+            if stopped_since is None:
+                stopped_since = time.monotonic()
+            if time.monotonic() - stopped_since >= settle_time:
+                return last
+        else:
+            stopped_since = None
+        time.sleep(0.05)
+        last = probe_api(config)
+    return last
+
+
+def _detect_macos_launch_agent() -> _MacOSLaunchAgent | None:
+    if sys.platform != "darwin" or not MACOS_LAUNCH_AGENT_PATH.is_file():
+        return None
+    try:
+        with MACOS_LAUNCH_AGENT_PATH.open("rb") as handle:
+            payload = plistlib.load(handle)
+    except (OSError, plistlib.InvalidFileException):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    arguments = payload.get("ProgramArguments")
+    if not isinstance(arguments, list) or not arguments:
+        return None
+    executable = arguments[0]
+    if (
+        payload.get("Label") != MACOS_LAUNCH_AGENT_LABEL
+        or not isinstance(executable, str)
+        or Path(executable).name != "csub"
+        or "serve" not in arguments[1:]
+    ):
+        return None
+
+    loaded, pid = _launch_agent_load_state(MACOS_LAUNCH_AGENT_LABEL)
+    return _MacOSLaunchAgent(
+        path=MACOS_LAUNCH_AGENT_PATH,
+        label=MACOS_LAUNCH_AGENT_LABEL,
+        loaded=loaded,
+        pid=pid,
+    )
+
+
+def _launch_agent_load_state(label: str) -> tuple[bool, int | None]:
+    try:
+        result = subprocess.run(
+            ["launchctl", "list"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False, None
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) != 3 or fields[2] != label:
+            continue
+        try:
+            pid = int(fields[0])
+        except ValueError:
+            pid = None
+        return True, pid
+    return False, None
+
+
+def _bootstrap_macos_launch_agent(agent: _MacOSLaunchAgent) -> None:
+    _run_launchctl(
+        ["bootstrap", f"gui/{os.getuid()}", str(agent.path)],
+        "加载 macOS 后台守护任务失败",
+    )
+
+
+def _bootout_macos_launch_agent(agent: _MacOSLaunchAgent) -> None:
+    _run_launchctl(
+        ["bootout", f"gui/{os.getuid()}/{agent.label}"],
+        "停止 macOS 后台守护任务失败",
+    )
+
+
+def _run_launchctl(arguments: list[str], error_message: str) -> None:
+    try:
+        result = subprocess.run(
+            ["launchctl", *arguments],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"{error_message}：{exc}") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        raise ValueError(f"{error_message}{f'：{detail}' if detail else ''}")
 
 
 def _raise_unstartable(status: ApiServiceStatus, config: dict[str, Any]) -> None:

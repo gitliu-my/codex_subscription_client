@@ -52,7 +52,9 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser(
         "status", help="Show local login status without printing tokens."
     )
-    subparsers.add_parser("logout", help="Delete tokens stored by this module.")
+    subparsers.add_parser(
+        "logout", help="Stop the local API and delete stored tokens."
+    )
     subparsers.add_parser("start", help="Start the shared API in the background.")
     subparsers.add_parser("stop", help="Stop the shared background API.")
     subparsers.add_parser("restart", help="Restart the shared background API.")
@@ -231,8 +233,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if status.logged_in else 1
 
         if args.command == "logout":
+            config = SettingsStore().load_or_create()
+            stop_error: ValueError | None = None
+            try:
+                stop_api_service(config)
+            except ValueError as exc:
+                stop_error = exc
             auth.logout()
             print("本模块保存的 Codex OAuth token 已删除。")
+            if stop_error is not None:
+                print(f"警告：本地 API 未能停止：{stop_error}", file=sys.stderr)
             return 0
 
         if args.command == "start":

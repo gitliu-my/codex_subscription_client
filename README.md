@@ -12,7 +12,7 @@ OpenAI-compatible API，并提供命令行工具与浏览器管理页面。
 > 使用前请自行确认账号、订阅和适用条款允许你的使用方式。不要共享 token、转售
 > 账号或用它绕过订阅限制。
 
-当前版本：`0.9.0`（alpha）。项目不依赖本机 Codex CLI，也不经过模型中间商。
+当前版本：`0.9.1`（alpha）。项目不依赖本机 Codex CLI，也不经过模型中间商。
 
 ## 功能
 
@@ -117,7 +117,10 @@ csub stop
 ```
 
 UI 和这些命令管理同一个后台 API。关闭浏览器或终端管理页不会
-停止 API；服务日志保存在 `~/.codex_subscription/api.log`。
+停止 API；服务日志保存在 `~/.codex_subscription/api.log`。如果本机存在执行
+`csub serve` 的 `~/Library/LaunchAgents/com.gitliu-my.csub-api.plist`，`start` 和
+`stop` 会分别加载和卸载该守护任务，同时保留 plist 文件及其备用机配置。
+执行 `csub logout` 会先停止本地 API，再删除 OAuth token。
 
 使用方向键选择并保存默认模型和推理档位：
 

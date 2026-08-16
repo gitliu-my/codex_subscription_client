@@ -83,6 +83,27 @@ class CliConfigurationTests(unittest.TestCase):
         auth.login.assert_not_called()
         self.assertIn("无桌面 Linux", output.getvalue())
 
+    @patch("codex_subscription.cli.stop_api_service")
+    @patch("codex_subscription.cli.SettingsStore")
+    @patch("codex_subscription.cli.CodexOAuth")
+    def test_logout_stops_api_before_deleting_tokens(
+        self,
+        auth_class: MagicMock,
+        settings_class: MagicMock,
+        stop_service: MagicMock,
+    ) -> None:
+        config = {"host": "127.0.0.1", "port": 8317, "api_key": "x" * 32}
+        settings_class.return_value.load_or_create.return_value = config
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            result = main(["logout"])
+
+        self.assertEqual(result, 0)
+        stop_service.assert_called_once_with(config)
+        auth_class.return_value.logout.assert_called_once_with()
+        self.assertIn("token 已删除", output.getvalue())
+
     def test_keys_command_creates_lists_and_reveals_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             keys = ApiKeyStore(

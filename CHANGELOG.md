@@ -4,6 +4,13 @@ All notable changes are documented here.
 
 ## Unreleased
 
+## 0.9.1 - 2026-08-16
+
+- Manage a matching macOS `com.gitliu-my.csub-api` LaunchAgent during API start/stop so
+  KeepAlive backup hosts do not immediately restart after the dashboard reports success.
+- Stop the local API when `csub logout` removes OAuth credentials, and reject dashboard API
+  startup when ChatGPT is not logged in.
+
 ## 0.9.0 - 2026-08-15
 
 - Add Linux x86_64 standalone builds and a no-sudo installer for `~/.local`.
